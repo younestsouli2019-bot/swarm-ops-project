@@ -1,0 +1,36 @@
+name: HIT Tick
+
+on:
+  schedule:
+    - cron: '*/2 * * * *'
+  workflow_dispatch:
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run swarm tick
+        run: |
+          response=$(curl -s -w "\n%{http_code}" \
+            -X POST \
+            -H "Accept: application/json" \
+            https://swarm-ops-project.vercel.app/api/orchestrator/tick)
+          
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+          
+          echo "HTTP Status: $http_code"
+          echo "Response: $body" | head -c 2000
+          
+          if [ "$http_code" != "200" ]; then
+            echo "Tick failed with status $http_code"
+            exit 1
+          fi
+
+          # Extract key metrics
+          ingested=$(echo "$body" | jq -r '.ingested // 0')
+          completed=$(echo "$body" | jq -r '.completed // 0')
+          revenue=$(echo "$body" | jq -r '.revenue_cents // 0')
+          elapsed=$(echo "$body" | jq -r '.elapsed_ms // 0')
+          
+          echo "Ingested: $ingested | Completed: $completed | Revenue: \$$(echo "scale=2; $revenue/100" | bc) | Elapsed: ${elapsed}ms"
