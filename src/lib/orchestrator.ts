@@ -786,12 +786,66 @@ export async function ingestHits(): Promise<number> {
     if (rd.hit_id) seenHitIds.add(rd.hit_id);
   }
   const fresh = batch.filter((h) => !seenHitIds.has(h.hit_id));
-  if (fresh.length === 0) return 0;
-  await b44.bulkCreate(
-    "Task",
-    fresh.map((h) => hitToTaskInput(h))
-  );
-  return fresh.length;
+  let hitCount = 0;
+  if (fresh.length > 0) {
+    await b44.bulkCreate(
+      "Task",
+      fresh.map((h) => hitToTaskInput(h))
+    );
+    hitCount = fresh.length;
+  }
+
+  // Procurement bridge: pull pending items from Neon and create Tasks
+  const procureCount = await bridgeProcurementTasks(existingTasks);
+
+  return hitCount + procureCount;
+}
+
+async function bridgeProcurementTasks(existingTasks: Task[]): Promise<number> {
+  try {
+    const { db } = await import("./db");
+    const pendingItems = await db.$queryRawUnsafe<any[]>(
+      `SELECT id, name, "recipientName", "recipientAddress",
+              quantity, "unitPriceEst", "totalEst", "supplierName",
+              "prePaidBySwarm", priority
+       FROM "ProcurementItem"
+       WHERE status = 'ordered'
+       ORDER BY "createdAt" ASC
+       LIMIT 10`
+    );
+    if (!pendingItems || pendingItems.length === 0) return 0;
+
+    const existingTitles = new Set(existingTasks.map((t) => t.title));
+    const newItems = pendingItems.filter(
+      (item: any) => !existingTitles.has(`Procure: ${item.name} for ${item.recipientName}`)
+    );
+    if (newItems.length === 0) return 0;
+
+    await b44.bulkCreate(
+      "Task",
+      newItems.map((item: any) => ({
+        title: `Procure: ${item.name} for ${item.recipientName}`,
+        description: `Source locally from Morocco. Qty: ${item.quantity}, Est cost: $${Number(item.totalEst).toFixed(2)}`,
+        type: "procurement",
+        status: "pending",
+        priority: (item.priority || "medium") as string,
+        result_data: {
+          procurement_item_id: item.id,
+          recipient: item.recipientName,
+          address: item.recipientAddress,
+          item: item.name,
+          qty: item.quantity,
+          unit_cost: Number(item.unitPriceEst),
+          total_cost: Number(item.totalEst),
+          supplier: item.supplierName || "TBD",
+          pre_paid: item.prePaidBySwarm,
+        },
+      }))
+    );
+    return newItems.length;
+  } catch {
+    return 0;
+  }
 }
 
 /**
