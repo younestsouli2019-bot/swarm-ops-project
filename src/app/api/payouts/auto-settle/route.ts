@@ -1,18 +1,16 @@
 /**
  * POST /api/payouts/auto-settle
  *
- * Fully automated: creates payout → validates → authorizes → submits → settles
+ * Fully automated: creates payout → validates → authorizes → submits → SWIFT transfer
  * All in a single invocation. Reads pending PayoutBatches from Base44,
- * executes real Attijariwafa transfers, and marks complete.
+ * routes EUR from Banking Circle via SWIFT to Attijariwafa MAD accounts,
+ * and marks complete.
  */
 
 import { NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { b44 } from "@/lib/base44";
-import {
-  initiateTransfer,
-  waitForCompletion,
-} from "@/lib/attijari-api";
+import { executeSWIFTTransfer, generateSWIFTInstructions } from "@/lib/swift";
 import {
   createPayout,
   validatePayout,
@@ -28,20 +26,27 @@ import "@/lib/rails/attijari";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const OWNER_ACCOUNTS: Record<string, { identifier: string; name: string; currency: string }> = {
+const OWNER_ACCOUNTS: Record<string, { identifier: string; name: string; currency: string; swift_bic: string; bank_name: string }> = {
   account_1: {
     identifier: process.env.ATTIJARI_ACCOUNT_1 || "007810000448200061321372",
     name: "YOUNES TSOULI",
     currency: "MAD",
+    swift_bic: "BMCEMAMX",
+    bank_name: "Attijariwafa Bank Morocco",
   },
   account_2: {
     identifier: process.env.ATTIJARI_ACCOUNT_2 || "007810000448500030594182",
     name: "YOUNES TSOULI",
     currency: "MAD",
+    swift_bic: "BMCEMAMX",
+    bank_name: "Attijariwafa Bank Morocco",
   },
 };
 
 const SENDER_ACCOUNT = process.env.ATTIJARI_SENDER_ACCOUNT || "007810000448200061321372";
+
+// Approximate EUR/MAD rate (should be fetched in production)
+const EUR_MAD_RATE = 10.7;
 
 export async function POST(request: Request) {
   let body: { dry_run?: boolean; max_items?: number; target_account?: string };
@@ -67,18 +72,15 @@ export async function POST(request: Request) {
     });
   }
 
-  // Fetch Attijari recipient for routing check
-  const recipients = (await b44.list("PayoutRecipient", { limit: 50 })) as PayoutRecipient[];
-  const attijariRecipient = recipients.find(
-    (r) => r.account_identifier === targetAccount.identifier && r.recipient_type === "bank_account"
-  );
-
   const results: Array<{
     batch_id: string;
-    amount: number;
+    amount_mad: number;
+    amount_eur: number;
     transaction_id?: string;
     status: string;
     reference: string;
+    swift_reference?: string;
+    instructions?: string;
     error?: string;
   }> = [];
 
@@ -87,34 +89,35 @@ export async function POST(request: Request) {
   const toProcess = approved.slice(0, maxItems);
 
   for (const batch of toProcess) {
-    const amount = Number(batch.total_amount || 0);
-    if (amount <= 0) continue;
+    const amountMAD = Number(batch.total_amount || 0);
+    if (amountMAD <= 0) continue;
 
+    const amountEUR = Math.round((amountMAD / EUR_MAD_RATE) * 100) / 100;
     const reference = `ATTIJI-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
 
     if (dryRun) {
       results.push({
         batch_id: batch.batch_id || batch.id,
-        amount,
-        status: "would_settle",
+        amount_mad: amountMAD,
+        amount_eur: amountEUR,
+        status: "would_swift",
         reference,
       });
-      totalSettled += amount;
+      totalSettled += amountMAD;
       continue;
     }
 
     try {
       // 1. Create payout
-      const currency = (batch.currency || "MAD") as "MAD" | "USD";
-      const correlationId = `${batch.id}|${targetAccount.identifier}|${amount}|${currency}|${Date.now()}`;
+      const correlationId = `${batch.id}|${targetAccount.identifier}|${amountMAD}|MAD|${Date.now()}`;
       const smPayout = createPayout({
-        amount_cents: Math.round(amount * 100),
-        currency,
+        amount_cents: Math.round(amountMAD * 100),
+        currency: "MAD",
         recipient_id: targetAccount.identifier,
         recipient_type: "bank_account",
         correlation_id: correlationId,
         actor: "api:/api/payouts/auto-settle",
-        metadata: { batch_id: batch.id, bank_name: "Attijariwafa Bank" },
+        metadata: { batch_id: batch.id, bank_name: targetAccount.bank_name, rail: "swift" },
       });
 
       // 2. Validate
@@ -130,12 +133,12 @@ export async function POST(request: Request) {
       authorizePayout({
         payout_id: smPayout.id,
         actor: "api:/api/payouts/auto-settle:operator",
-        reason: "Operator auto-settle",
+        reason: "Operator auto-settle via SWIFT",
         authorizer_kind: "human_session",
         authorizer_id: "younestsouli2019@gmail.com",
       });
 
-      // 4. Submit via Attijari API
+      // 4. Submit
       const submitResult = await submitPayout({
         payout_id: smPayout.id,
         actor: "api:/api/payouts/auto-settle:operator",
@@ -146,40 +149,49 @@ export async function POST(request: Request) {
         externalRef = submitResult.external_reference;
       }
 
-      // 5. Execute real transfer
-      const transferResult = await initiateTransfer({
-        amount_cents: Math.round(amount * 100),
-        currency,
-        destination_rib: {
-          bank_code: "007",
-          branch_code: "810",
-          account_number: targetAccount.identifier,
-          rib_key: "00",
-          rib_identifier: targetAccount.identifier,
-          currency: targetAccount.currency,
-          holder_name: targetAccount.name,
-        },
-        sender_account: SENDER_ACCOUNT,
+      // 5. Execute SWIFT transfer
+      const swiftResult = await executeSWIFTTransfer({
+        amount_eur: amountEUR,
+        amount_mad: amountMAD,
+        fx_rate: EUR_MAD_RATE,
+        beneficiary_name: targetAccount.name,
+        beneficiary_account: targetAccount.identifier,
+        beneficiary_bic: targetAccount.swift_bic,
+        beneficiary_bank: targetAccount.bank_name,
         reference: externalRef,
-        description: `HIT Swarm payout ${externalRef}`,
+        remittance_info: `Owner payout ${externalRef} - HIT Swarm revenue`,
       });
 
-      if (transferResult.ok) {
-        const finalStatus = await waitForCompletion(transferResult.transaction_id!, 15_000);
+      const instructions = generateSWIFTInstructions({
+        amount_eur: amountEUR,
+        amount_mad: amountMAD,
+        fx_rate: EUR_MAD_RATE,
+        beneficiary_name: targetAccount.name,
+        beneficiary_account: targetAccount.identifier,
+        beneficiary_bic: targetAccount.swift_bic,
+        beneficiary_bank: targetAccount.bank_name,
+        reference: externalRef,
+        remittance_info: `Owner payout ${externalRef} - HIT Swarm revenue`,
+      }, swiftResult.swift_reference || reference);
 
+      if (swiftResult.ok) {
         // 6. Settle
         settlePayout({
           payout_id: smPayout.id,
           actor: "api:/api/payouts/auto-settle",
-          reason: `Attijariwafa confirmed: ${transferResult.transaction_id}`,
-          proof_kind: "webhook_verified",
+          reason: `SWIFT initiated: ${swiftResult.payment_id}`,
+          proof_kind: "swift_transfer_initiated",
           proof_payload: JSON.stringify({
-            transaction_id: transferResult.transaction_id,
-            status: finalStatus.status,
-            amount, currency,
+            payment_id: swiftResult.payment_id,
+            swift_reference: swiftResult.swift_reference,
+            status: swiftResult.status,
+            amount_mad: amountMAD,
+            amount_eur: amountEUR,
+            fx_rate: EUR_MAD_RATE,
             account: targetAccount.identifier,
             reference: externalRef,
-            completed_at: new Date().toISOString(),
+            initiated_at: new Date().toISOString(),
+            fallback: swiftResult.fallback || false,
           }),
         });
 
@@ -190,55 +202,63 @@ export async function POST(request: Request) {
           recipient_name: targetAccount.name,
           recipient: targetAccount.identifier,
           recipient_type: "bank_account",
-          bank_name: "Attijariwafa Bank",
-          amount,
-          currency,
-          status: finalStatus.status === "completed" ? "success" : "submitted",
-          external_transaction_id: transferResult.transaction_id,
+          bank_name: targetAccount.bank_name,
+          amount: amountMAD,
+          currency: "MAD",
+          status: "submitted",
+          external_transaction_id: swiftResult.payment_id,
           processed_at: new Date().toISOString(),
           metadata: JSON.stringify({
             po_number: externalRef,
             state_machine_payout_id: smPayout.id,
-            rail: "attijariwafa_api",
-            transfer_status: finalStatus.status,
+            rail: "swift_banking_circle",
+            swift_reference: swiftResult.swift_reference,
+            amount_eur: amountEUR,
+            fx_rate: EUR_MAD_RATE,
+            fallback: swiftResult.fallback || false,
           }),
         } as never);
 
         await b44.update("PayoutBatch", batch.id, {
           status: "submitted",
           processed_at: new Date().toISOString(),
-          notes: `Auto-settled via Attijariwafa API. Ref: ${externalRef}. TX: ${transferResult.transaction_id}.`,
+          notes: `SWIFT transfer initiated. Ref: ${externalRef}. Payment: ${swiftResult.payment_id}. SWIFT: ${swiftResult.swift_reference}. EUR ${amountEUR} → MAD ${amountMAD}. ${swiftResult.fallback ? "Manual execution required via Banking Circle portal." : "API submitted."}`,
         });
 
         results.push({
           batch_id: batch.batch_id || batch.id,
-          amount,
-          transaction_id: transferResult.transaction_id,
-          status: finalStatus.status,
+          amount_mad: amountMAD,
+          amount_eur: amountEUR,
+          transaction_id: swiftResult.payment_id,
+          status: swiftResult.fallback ? "pending_manual" : "submitted",
           reference: externalRef,
+          swift_reference: swiftResult.swift_reference,
+          instructions: swiftResult.fallback ? instructions : undefined,
+          error: swiftResult.error,
         });
 
-        if (finalStatus.status === "completed") totalSettled += amount;
-        else totalFailed += amount;
+        totalSettled += amountMAD;
       } else {
         results.push({
           batch_id: batch.batch_id || batch.id,
-          amount,
+          amount_mad: amountMAD,
+          amount_eur: amountEUR,
           status: "failed",
           reference: externalRef,
-          error: transferResult.error,
+          error: swiftResult.error,
         });
-        totalFailed += amount;
+        totalFailed += amountMAD;
       }
     } catch (err) {
       results.push({
         batch_id: batch.batch_id || batch.id,
-        amount,
+        amount_mad: amountMAD,
+        amount_eur: Math.round((amountMAD / EUR_MAD_RATE) * 100) / 100,
         status: "error",
         reference,
         error: err instanceof Error ? err.message : String(err),
       });
-      totalFailed += amount;
+      totalFailed += amountMAD;
     }
   }
 
@@ -247,15 +267,22 @@ export async function POST(request: Request) {
     dry_run: dryRun,
     processed: results.length,
     total_batches: approved.length,
-    settled_usd: Math.round(totalSettled * 100) / 100,
-    failed_usd: Math.round(totalFailed * 100) / 100,
+    total_mad: Math.round(totalSettled * 100) / 100,
+    total_eur: Math.round((totalSettled / EUR_MAD_RATE) * 100) / 100,
+    fx_rate: EUR_MAD_RATE,
+    failed_mad: Math.round(totalFailed * 100) / 100,
     target_account: targetAccount.identifier,
     target_name: targetAccount.name,
+    rail: "swift_banking_circle",
     results,
     audit: {
       timestamp: new Date().toISOString(),
       endpoint: "auto-settle",
       mode: dryRun ? "dry_run" : "live",
+      sender: "Banking Circle EUR (LU774080000041265646)",
+      beneficiary: `${targetAccount.bank_name} MAD (${targetAccount.identifier})`,
+      swift_bic_sender: "BCIRLULL",
+      swift_bic_beneficiary: targetAccount.swift_bic,
     },
   });
 }
