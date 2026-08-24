@@ -8,12 +8,10 @@ export const revalidate = 0;
  * GET /api/cron/tick – Vercel Cron triggered endpoint.
  *
  * Runs one full orchestration cycle automatically, every 2 minutes.
- * Secured by CRON_SECRET — only Vercel's cron service can call this.
- * If CRON_SECRET is not set, falls back to allowing unauthenticated calls
- * (for local dev / manual triggers).
+ * Also triggers auto-settle for any approved PayoutBatches.
+ * Secured by CRON_SECRET.
  */
 export async function GET(req: Request) {
-  // Verify Vercel Cron auth
   const authHeader = req.headers.get("authorization");
   const cronSecret = process.env.CRON_SECRET;
 
@@ -27,10 +25,31 @@ export async function GET(req: Request) {
     await ensureSeed();
     const report = await tick();
     invalidateSwarmStateCache();
+
+    // Auto-settle any approved PayoutBatches via Attijariwafa API
+    let settleResult = null;
+    try {
+      const baseUrl = process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}`
+        : "https://swarm-ops-project.vercel.app";
+      const settleRes = await fetch("https://swarm-ops-project.vercel.app/api/payouts/auto-settle", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-vercel-protection-bypass": process.env.VERCEL_DEPLOYMENT_BYPASS_SECRET || "",
+        },
+        body: JSON.stringify({ dry_run: false, max_items: 50 }),
+      });
+      settleResult = await settleRes.json();
+    } catch {
+      settleResult = { error: "auto-settle fetch failed" };
+    }
+
     return NextResponse.json({
       source: "cron",
       timestamp: new Date().toISOString(),
       ...report,
+      auto_settle: settleResult,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

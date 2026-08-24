@@ -82,6 +82,10 @@ export const OWNER_ROUTING_WHITELIST_PATTERNS: ReadonlyArray<string> =
     "younestsouli2019-bot",
     "nouveau-dossier-3",
     "charibaas-owner",
+    "attijari",
+    "attijariwafa",
+    "007810000448200061321372",
+    "007810000448500030594182",
   ]);
 
 /**
