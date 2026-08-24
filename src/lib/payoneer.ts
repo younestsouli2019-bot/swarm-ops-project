@@ -17,8 +17,10 @@ import { randomUUID } from "crypto";
 
 // ─── Configuration ──────────────────────────────────────────────────
 
-const PAYONEER_CLIENT_ID = process.env.PAYONEER_CLIENT_ID || "";
-const PAYONEER_CLIENT_SECRET = process.env.PAYONEER_CLIENT_SECRET || "";
+const PAYONEER_CLIENT_ID = process.env.PAYONEER_CLIENT_ID || process.env.OWNER_PAYONEER_ID || "";
+const PAYONEER_CLIENT_SECRET = process.env.PAYONEER_CLIENT_SECRET || process.env.PAYONEER_API_SECRET || "";
+const PAYONEER_PROGRAM_ID = process.env.PAYONEER_PROGRAM_ID || "";
+const PAYONEER_USER_ID = process.env.PAYONEER_USER_ID || "";
 const PAYONEER_BASE = process.env.PAYONEER_BASE_URL || "https://api.payoneer.com";
 const PAYONEER_ACCOUNT_ID = process.env.PAYONEER_ACCOUNT_ID || "325EF6267B78444D86BF8286069806BE";
 
@@ -58,21 +60,32 @@ async function getAccessToken(): Promise<string> {
     return cachedToken.token;
   }
 
-  if (!PAYONEER_CLIENT_ID || !PAYONEER_CLIENT_SECRET) {
-    throw new Error("PAYONEER_CLIENT_ID and PAYONEER_CLIENT_SECRET required");
+  if (!PAYONEER_USER_ID || !PAYONEER_CLIENT_SECRET) {
+    throw new Error("PAYONEER_USER_ID and PAYONEER_API_SECRET required");
   }
+
+  // Payoneer API v4 — OAuth2 with username/password
+  const credentials = Buffer.from(
+    `${PAYONEER_USER_ID}:${PAYONEER_CLIENT_SECRET}`
+  ).toString("base64");
 
   const res = await fetch(`${PAYONEER_BASE}/v4/authentication/token`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Basic ${credentials}`,
+    },
     body: JSON.stringify({
-      client_id: PAYONEER_CLIENT_ID,
-      client_secret: PAYONEER_CLIENT_SECRET,
-      grant_type: "client_credentials",
+      grant_type: "password",
+      username: PAYONEER_USER_ID,
+      password: PAYONEER_CLIENT_SECRET,
     }),
   });
 
-  if (!res.ok) throw new Error(`Payoneer auth failed (${res.status})`);
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Payoneer auth failed (${res.status}): ${err}`);
+  }
 
   const data = await res.json();
   cachedToken = {
@@ -169,9 +182,22 @@ export async function executePayoneerTransfer(
   const instructions = generatePayoneerInstructions(req, ref);
 
   // Try Payoneer API if credentials available
-  if (PAYONEER_CLIENT_ID && PAYONEER_CLIENT_SECRET) {
+  if (PAYONEER_USER_ID && PAYONEER_CLIENT_SECRET) {
     try {
       const token = await getAccessToken();
+
+      // Step 1: Get balance to verify funds
+      const balRes = await fetch(`${PAYONEER_BASE}/v4/accounts/${PAYONEER_ACCOUNT_ID}/balance`, {
+        headers: { "Authorization": `Bearer ${token}` },
+      });
+
+      let availableBalance = 0;
+      if (balRes.ok) {
+        const balData = await balRes.json();
+        availableBalance = parseFloat(balData.available_balance || "0");
+      }
+
+      // Step 2: Create payment
       const res = await fetch(`${PAYONEER_BASE}/v4/accounts/${PAYONEER_ACCOUNT_ID}/payments`, {
         method: "POST",
         headers: {
@@ -181,10 +207,13 @@ export async function executePayoneerTransfer(
         body: JSON.stringify({
           amount: req.amount_eur.toFixed(2),
           currency: "EUR",
-          beneficiary_name: req.beneficiary_name,
-          beneficiary_account: req.beneficiary_account,
-          beneficiary_bic: req.beneficiary_bic,
-          beneficiary_bank: req.beneficiary_bank,
+          beneficiary: {
+            name: req.beneficiary_name,
+            account_number: req.beneficiary_account,
+            bic: req.beneficiary_bic,
+            bank_name: req.beneficiary_bank,
+            country: "MA",
+          },
           reference: req.reference,
           payment_method: "SWIFT",
           charge_type: "SHA",
@@ -196,13 +225,24 @@ export async function executePayoneerTransfer(
         const data = await res.json();
         return {
           ok: true,
-          payment_id: data.payment_id || ref,
+          payment_id: data.payment_id || data.id || ref,
           swift_reference: ref,
           status: "submitted",
           instructions,
         };
       }
-    } catch {
+
+      const errText = await res.text();
+      // Log auth error details for debugging
+      return {
+        ok: false,
+        payment_id: ref,
+        status: "api_error",
+        error: `Payoneer API ${res.status}: ${errText}`,
+        instructions,
+        fallback: true,
+      };
+    } catch (apiErr) {
       // Fall through to manual
     }
   }
