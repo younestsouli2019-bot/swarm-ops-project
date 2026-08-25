@@ -67,12 +67,12 @@ export async function POST(request: Request) {
   }
 
   const batches = (await b44.list("PayoutBatch", { limit: 200 })) as PayoutBatch[];
-  const approved = batches.filter((b) => b.status === "approved");
+  const approved = batches.filter((b) => b.status === "approved" || b.status === "failed" || b.status === "draft");
 
   if (approved.length === 0) {
     return NextResponse.json({
       ok: true,
-      message: "No approved PayoutBatches to auto-settle",
+      message: "No PayoutBatches to auto-settle",
       processed: 0,
     });
   }
@@ -303,7 +303,8 @@ export async function POST(request: Request) {
     ok: true,
     dry_run: dryRun,
     processed: results.length,
-    total_batches: approved.length,
+    total_batches: batches.length,
+    eligible_batches: approved.length,
     total_mad: Math.round(totalSettled * 100) / 100,
     total_eur: Math.round((totalSettled / EUR_MAD_RATE) * 100) / 100,
     fx_rate: EUR_MAD_RATE,
