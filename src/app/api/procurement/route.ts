@@ -1,43 +1,78 @@
+/**
+ * Procurement Control Plane Dashboard
+ *
+ * GET /api/procurement — returns PO dashboard
+ * POST /api/procurement — runs PO reconciliation
+ */
+
 import { NextResponse } from "next/server";
+import { b44 } from "@/lib/base44";
+import {
+  runPOReconciliation,
+  formatPOReconciliationReport,
+} from "@/lib/finance/po-reconciliation";
+import { maskAccount } from "@/lib/finance/money-state";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 export async function GET() {
+  // Run PO reconciliation
+  let reconciliation;
   try {
-    const { db } = await import("@/lib/db");
-
-    const items = await db.$queryRawUnsafe<any[]>(
-      `SELECT id, name, "recipientName", "recipientAddress",
-              quantity, "unitPriceEst", "totalEst", "supplierName",
-              "prePaidBySwarm", status, priority, "createdAt"
-       FROM "ProcurementItem"
-       ORDER BY "createdAt" DESC
-       LIMIT 200`
-    );
-
-    const summary = {
-      total: items.length,
-      prePaid: items.filter((i: any) => i.prePaidBySwarm).length,
-      byStatus: {} as Record<string, number>,
-      byRecipient: {} as Record<string, number>,
-      totalValue: 0,
-    };
-
-    for (const item of items) {
-      const st = item.status || "unknown";
-      summary.byStatus[st] = (summary.byStatus[st] || 0) + 1;
-      const rn = item.recipientName || "unknown";
-      summary.byRecipient[rn] = (summary.byRecipient[rn] || 0) + 1;
-      summary.totalValue += Number(item.totalEst || 0);
-    }
-
-    return NextResponse.json({
-      ok: true,
-      summary,
-      items: items.slice(0, 50),
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
+    reconciliation = await runPOReconciliation();
+  } catch {
+    reconciliation = null;
   }
+
+  return NextResponse.json({
+    ok: true,
+    dashboard: reconciliation?.dashboard || {
+      title: "PROCUREMENT CONTROL",
+      summary: {
+        total_pos: 0,
+        created: 0,
+        approved: 0,
+        ordered: 0,
+        paid: 0,
+        shipped: 0,
+        delivered: 0,
+        confirmed: 0,
+        cancelled: 0,
+        disputed: 0,
+        refunded: 0,
+        quarantined: 0,
+      },
+      financials: {
+        total_order_value: 0,
+        total_paid: 0,
+        total_refunded: 0,
+        pending_payments: 0,
+        pending_deliveries: 0,
+      },
+      by_recipient: {},
+      by_supplier: {},
+      exceptions: 0,
+    },
+    reconciliation: reconciliation
+      ? {
+          summary: reconciliation.summary,
+          exceptions: reconciliation.exceptions,
+          items: reconciliation.items.slice(0, 20),
+        }
+      : null,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+export async function POST() {
+  const reconciliation = await runPOReconciliation();
+  const report = formatPOReconciliationReport(reconciliation);
+
+  return NextResponse.json({
+    ok: true,
+    reconciliation,
+    report,
+    timestamp: new Date().toISOString(),
+  });
 }
