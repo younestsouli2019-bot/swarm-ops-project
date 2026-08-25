@@ -427,6 +427,12 @@ export interface TickReport {
   procurement_advanced?: number;
   /** Procurement: how many POs reached Received_Verified (three-way match) this tick. */
   procurement_received?: number;
+  /** Procurement Autopilot: real DB items scanned this tick. */
+  autopilot_scanned?: number;
+  /** Procurement Autopilot: real DB items advanced this tick. */
+  autopilot_advanced?: number;
+  /** Procurement Autopilot: real DB items settled this tick. */
+  autopilot_settled?: number;
   /**
    * If the tick was skipped because another tick held the global tick
    * mutex, this is a short reason string. The most common value is
@@ -1914,6 +1920,9 @@ export async function tick(): Promise<TickReport> {
       procurement_created: 0,
       procurement_advanced: 0,
       procurement_received: 0,
+      autopilot_scanned: 0,
+      autopilot_advanced: 0,
+      autopilot_settled: 0,
       tick_skipped: "lock_contention",
       lock_contention: {
         blocked_by: lockResult.blocked_by,
@@ -1951,6 +1960,9 @@ export async function tick(): Promise<TickReport> {
       procurement_created: 0,
       procurement_advanced: 0,
       procurement_received: 0,
+      autopilot_scanned: 0,
+      autopilot_advanced: 0,
+      autopilot_settled: 0,
     };
   }
 
@@ -1979,6 +1991,9 @@ export async function tick(): Promise<TickReport> {
       procurement_created: 0,
       procurement_advanced: 0,
       procurement_received: 0,
+      autopilot_scanned: 0,
+      autopilot_advanced: 0,
+      autopilot_settled: 0,
     };
   }
 
@@ -1996,6 +2011,15 @@ export async function tick(): Promise<TickReport> {
   const threshold_actions = await enforceThresholds();
   // Procurement tick: advance any POs through their lifecycle.
   const procurementTickResult = runProcurementTick();
+
+  // Procurement Autopilot: advance real Neon DB ProcurementItem records.
+  let autopilotResult = { scanned: 0, advanced: 0, settled: 0 };
+  try {
+    const { runProcurementAutopilot } = await import("./procurement-autopilot");
+    autopilotResult = await runProcurementAutopilot();
+  } catch {
+    // Autopilot failure is non-fatal — the in-memory tick still ran.
+  }
 
   // Read settlement counters stashed on the last batch (if any).
   const settlementStats = getSettlementStats();
@@ -2031,6 +2055,9 @@ export async function tick(): Promise<TickReport> {
     procurement_created: procurementTickResult.created,
     procurement_advanced: procurementTickResult.advanced,
     procurement_received: procurementTickResult.received,
+    autopilot_scanned: autopilotResult.scanned,
+    autopilot_advanced: autopilotResult.advanced,
+    autopilot_settled: autopilotResult.settled,
   };
 
   // Layer 1 post: SIG signal update + breach evaluation.
