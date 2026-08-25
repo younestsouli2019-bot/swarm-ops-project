@@ -1,0 +1,6 @@
+First Name,Last Name,Email,Company Name (Companies only),URL (Companies only-optional),Amount,Currency,Payment Due By (DD/MM/YYYY),Description
+Younes,Tsouli,younesdgc@gmail.com,,,42.06,EUR,25/08/2026,REV-BATCH-001 Revenue settlements PB-REV-001/002/003 + sandbox
+Younes,Tsouli,younesdgc@gmail.com,,,112.15,EUR,25/08/2026,SWIFT-BATCH-A SWIFT settlements PB-SWIFT-FINAL + 181058 + 190017
+Younes,Tsouli,younesdgc@gmail.com,,,51.40,EUR,25/08/2026,SWIFT-BATCH-B SWIFT settlements PB-SWIFT-182159 + ATTIJARI-AUTO + FINAL-TEST
+Younes,Tsouli,younesdgc@gmail.com,,,18.84,EUR,25/08/2026,LEGACY-BATCH Legacy settlement PB-MT759DO1
+Younes,Tsouli,younesdgc@gmail.com,,,71.29,EUR,25/08/2026,MICRO-BATCH Micro settlements PB-MST* 14 batches

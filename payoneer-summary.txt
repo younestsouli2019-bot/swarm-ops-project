@@ -1,0 +1,101 @@
+﻿╔══════════════════════════════════════════════════════════════════╗
+║     PAYONEER SWIFT BATCH — OWNER SETTLEMENT                    ║
+╚══════════════════════════════════════════════════════════════════╝
+
+DATE:       2026-08-24 22:37
+TOTAL:      EUR 295.73 → MAD 3164.39
+TRANSFERS:  25
+BENEFICIARY: YOUNES TSOULI
+ACCOUNT:    007810000448200061321372
+BANK:       Attijariwafa Bank Morocco
+BIC:        BMCEMAMX
+
+══════════════════════════════════════════════════════════════════
+TRANSFER LIST:
+══════════════════════════════════════════════════════════════════
+1. EUR 2.52 (MAD 27.0)
+   Ref: PB-REV-003-20260824
+
+2. EUR 14.02 (MAD 150.0)
+   Ref: PB-REV-002-20260824
+
+3. EUR 14.02 (MAD 150.0)
+   Ref: PB-REV-001-20260824
+
+4. EUR 37.38 (MAD 400.0)
+   Ref: PB-20260824-190017
+
+5. EUR 28.04 (MAD 300.0)
+   Ref: PB-SWIFT-20260824-182159
+
+6. EUR 46.73 (MAD 500.0)
+   Ref: PB-SWIFT-FINAL-20260824-181641
+
+7. EUR 46.73 (MAD 500.0)
+   Ref: PB-SWIFT-20260824-181058
+
+8. EUR 23.36 (MAD 250.0)
+   Ref: PB-ATTIJARI-AUTO-20260824-175311
+
+9. EUR 14.02 (MAD 150.0)
+   Ref: PB-FINAL-TEST-20260824-173415
+
+10. EUR 9.35 (MAD 100.0)
+   Ref: PB-SANDBOX-TEST-20260824-172015
+
+11. EUR 18.84 (MAD 201.58)
+   Ref: PB-MT759DO1
+
+12. EUR 2.4 (MAD 25.68)
+   Ref: PB-MST846BH
+
+13. EUR 2.51 (MAD 26.9)
+   Ref: PB-MST719BU
+
+14. EUR 2.39 (MAD 25.53)
+   Ref: PB-MST69HNG
+
+15. EUR 2.61 (MAD 27.98)
+   Ref: PB-MST5V23C
+
+16. EUR 3.96 (MAD 42.4)
+   Ref: PB-MST5GOEI
+
+17. EUR 4.27 (MAD 45.71)
+   Ref: PB-MST4VIIA
+
+18. EUR 2.67 (MAD 28.59)
+   Ref: PB-MST4OM93
+
+19. EUR 3.86 (MAD 41.32)
+   Ref: PB-MST4HGCU
+
+20. EUR 4.02 (MAD 43.02)
+   Ref: PB-MST49S2P
+
+21. EUR 2.34 (MAD 25.04)
+   Ref: PB-MST436TV
+
+22. EUR 2.46 (MAD 26.35)
+   Ref: PB-MST3XXYD
+
+23. EUR 2.40 (MAD 25.7)
+   Ref: PB-MST3SLNJ
+
+24. EUR 2.48 (MAD 26.49)
+   Ref: PB-MST3OWTH
+
+25. EUR 2.35 (MAD 25.1)
+   Ref: PB-MST3C5XU
+
+══════════════════════════════════════════════════════════════════
+EXECUTION:
+══════════════════════════════════════════════════════════════════
+1. Login: https://www.payoneer.com/login
+2. Pay > Send to Bank Account
+3. Upload CSV file: payoneer-swift-transfers.csv
+4. OR enter each transfer manually
+5. Confirm and send
+6. Funds arrive 1-3 business days
+
+CSV FILE: payoneer-swift-transfers.csv

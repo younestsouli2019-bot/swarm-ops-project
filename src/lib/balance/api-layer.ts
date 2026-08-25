@@ -63,28 +63,34 @@ function setCache(key: string, data: BalanceResponse): void {
 // ─── Payoneer Adapter ───────────────────────────────────────────────
 
 async function fetchPayoneerBalance(): Promise<BalanceResult[]> {
-  const clientId = process.env.PAYONEER_CLIENT_ID;
-  const clientSecret = process.env.PAYONEER_CLIENT_SECRET;
+  const clientId = process.env.PAYONEER_CLIENT_ID || process.env.OWNER_PAYONEER_ID || "";
+  const clientSecret = process.env.PAYONEER_CLIENT_SECRET || process.env.PAYONEER_API_SECRET || "";
   const accountId = process.env.PAYONEER_ACCOUNT_ID || "325EF6267B78444D86BF8286069806BE";
   const base = process.env.PAYONEER_BASE_URL || "https://api.payoneer.com";
+  const userId = process.env.PAYONEER_USER_ID || "";
 
-  if (!clientId || !clientSecret) {
-    throw new Error("PAYONEER_CLIENT_ID and PAYONEER_CLIENT_SECRET required for live balance");
+  if (!userId || !clientSecret) {
+    throw new Error("PAYONEER_USER_ID and PAYONEER_API_SECRET required for live balance");
   }
 
-  // Get OAuth2 token
+  // Get OAuth2 token using username/password (Payoneer API v4)
+  const credentials = Buffer.from(`${userId}:${clientSecret}`).toString("base64");
   const tokenRes = await fetch(`${base}/v4/authentication/token`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Basic ${credentials}`,
+    },
     body: JSON.stringify({
-      client_id: clientId,
-      client_secret: clientSecret,
-      grant_type: "client_credentials",
+      grant_type: "password",
+      username: userId,
+      password: clientSecret,
     }),
   });
 
   if (!tokenRes.ok) {
-    throw new Error(`Payoneer auth failed (${tokenRes.status})`);
+    const errText = await tokenRes.text();
+    throw new Error(`Payoneer auth failed (${tokenRes.status}): ${errText}`);
   }
 
   const tokenData = await tokenRes.json();
