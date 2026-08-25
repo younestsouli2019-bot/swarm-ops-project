@@ -34,6 +34,15 @@ import {
   WorkflowIcon,
   Zap,
   ArrowRight,
+  Wallet,
+  CreditCard,
+  Package,
+  Truck,
+  GraduationCap,
+  Coins,
+  Radio,
+  Settings,
+  GitBranch,
 } from "@/components/swarm/icons";
 import { Providers, useSwarmState, useTick, useAutopilot } from "@/components/swarm/providers";
 import { DashboardView } from "@/components/swarm/dashboard-view";
@@ -52,12 +61,31 @@ import { TokenOptimizerView } from "@/components/swarm/token-optimizer-view";
 import { OmnigentView } from "@/components/swarm/omnigent-view";
 import { SettlementView } from "@/components/swarm/settlement-view";
 import { MoneyFlowView } from "@/components/swarm/money-flow-view";
+import { AccountsView } from "@/components/swarm/accounts-view";
+import { PaymentsView } from "@/components/swarm/payments-view";
+import { ConnectorsView } from "@/components/swarm/connectors-view";
+import { OrdersView } from "@/components/swarm/orders-view";
+import { ShipmentsView } from "@/components/swarm/shipments-view";
+import { AuditView } from "@/components/swarm/audit-view";
+import { LearningView } from "@/components/swarm/learning-view";
+import { CryptoView } from "@/components/swarm/crypto-view";
+import { ExecutionView } from "@/components/swarm/execution-view";
+import { SwarmSyncView } from "@/components/swarm/swarm-sync-view";
+import { VaultView } from "@/components/swarm/vault-view";
+import { DeployView } from "@/components/swarm/deploy-view";
+import { ResilienceView } from "@/components/swarm/resilience-view";
 import { fmtUsd, timeAgo } from "@/components/swarm/primitives";
 import type { LucideIcon } from "lucide-react";
 
 type ViewId =
   | "dashboard"
   | "swarm"
+  | "accounts"
+  | "payments"
+  | "connectors"
+  | "orders"
+  | "shipments"
+  | "procurement"
   | "missions"
   | "pipeline"
   | "revenue"
@@ -71,7 +99,15 @@ type ViewId =
   | "token-optimizer"
   | "omnigent"
   | "settlement"
-  | "money-flow";
+  | "money-flow"
+  | "audit"
+  | "learning"
+  | "crypto"
+  | "execution"
+  | "swarm-sync"
+  | "vault"
+  | "deploy"
+  | "resilience";
 
 interface NavItem {
   id: ViewId;
@@ -81,8 +117,14 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, hint: "Live KPIs and activity feed" },
+  { id: "dashboard", label: "Command Center", icon: LayoutDashboard, hint: "Live KPIs and activity feed" },
   { id: "swarm", label: "Swarm", icon: Bot, hint: "Agents and threshold rules" },
+  { id: "accounts", label: "Accounts", icon: Wallet, hint: "Owner bank accounts and balances" },
+  { id: "payments", label: "Payments", icon: CreditCard, hint: "Payment routing and history" },
+  { id: "connectors", label: "Connectors", icon: Landmark, hint: "Banking and PSP integrations" },
+  { id: "orders", label: "Orders", icon: Package, hint: "Purchase orders and fulfillment" },
+  { id: "shipments", label: "Shipments", icon: Truck, hint: "Carrier tracking and delivery" },
+  { id: "procurement", label: "Procurement", icon: ShieldCheck, hint: "PO fulfillment and SLA tracking" },
   { id: "missions", label: "Missions", icon: Rocket, hint: "Revenue-generation missions" },
   { id: "pipeline", label: "HIT Pipeline", icon: ListChecks, hint: "Tasks dispatched to agents" },
   { id: "revenue", label: "Revenue", icon: Activity, hint: "Streams and event ledger" },
@@ -90,13 +132,21 @@ const NAV: NavItem[] = [
   { id: "marketplace", label: "Marketplace", icon: Store, hint: "Open HITs feed" },
   { id: "workflows", label: "Workflows", icon: WorkflowIcon, hint: "Reusable node-graphs" },
   { id: "models", label: "Models", icon: Cpu, hint: "Free-tier AI model registry" },
-  { id: "token-optimizer", label: "Token Optimizer", icon: Zap, hint: "Symbol extraction · code analysis · MCP · AI suggestions" },
-  { id: "omnigent", label: "Omnigent", icon: Brain, hint: "Tiered memory + capability-aware load balancer" },
-  { id: "settlement", label: "Settlement", icon: Landmark, hint: "2PC ledger · three-way match · oracle-verified receipts" },
-  { id: "money-flow", label: "Money Flow", icon: ArrowRight, hint: "Real-time pipeline · where money is stuck" },
+  { id: "token-optimizer", label: "Token Optimizer", icon: Zap, hint: "Symbol extraction · code analysis · MCP" },
+  { id: "omnigent", label: "Omnigent", icon: Brain, hint: "Tiered memory + load balancer" },
+  { id: "settlement", label: "Settlement", icon: Landmark, hint: "2PC ledger · three-way match" },
+  { id: "money-flow", label: "Money Flow", icon: ArrowRight, hint: "Real-time pipeline · stuck funds" },
   { id: "integrity", label: "Integrity", icon: Shield, hint: "Anti-pattern guard + breach log" },
-  { id: "guardrails", label: "Guardrails", icon: ShieldAlert, hint: "Risk-category safeguards + self-redress" },
+  { id: "guardrails", label: "Guardrails", icon: ShieldAlert, hint: "Risk-category safeguards" },
   { id: "agent-safety", label: "Agent Safety", icon: ShieldCheck, hint: "Per-capability guardrail bindings" },
+  { id: "audit", label: "Audit", icon: ScrollText, hint: "Compliance audit trail" },
+  { id: "learning", label: "Learning", icon: GraduationCap, hint: "Swarm learning and rewards" },
+  { id: "crypto", label: "Crypto", icon: Coins, hint: "On-chain wallets and USDT" },
+  { id: "execution", label: "Execution", icon: Rocket, hint: "Pipeline execution engine" },
+  { id: "swarm-sync", label: "Swarm Sync", icon: Radio, hint: "Node synchronization" },
+  { id: "vault", label: "Vault", icon: Settings, hint: "Secrets and config management" },
+  { id: "deploy", label: "Deploy", icon: GitBranch, hint: "Deployment history" },
+  { id: "resilience", label: "Resilience", icon: Zap, hint: "Fault tolerance and recovery" },
 ];
 
 /**
@@ -452,6 +502,12 @@ function Shell() {
                 />
               )}
               {view === "swarm" && <SwarmView state={state} />}
+              {view === "accounts" && <AccountsView />}
+              {view === "payments" && <PaymentsView />}
+              {view === "connectors" && <ConnectorsView />}
+              {view === "orders" && <OrdersView />}
+              {view === "shipments" && <ShipmentsView />}
+              {view === "procurement" && <PayoutsView state={state} />}
               {view === "missions" && <MissionsView state={state} />}
               {view === "pipeline" && <PipelineView state={state} />}
               {view === "revenue" && <RevenueView state={state} />}
@@ -466,6 +522,14 @@ function Shell() {
               {view === "omnigent" && <OmnigentView />}
               {view === "settlement" && <SettlementView />}
               {view === "money-flow" && <MoneyFlowView />}
+              {view === "audit" && <AuditView />}
+              {view === "learning" && <LearningView />}
+              {view === "crypto" && <CryptoView />}
+              {view === "execution" && <ExecutionView />}
+              {view === "swarm-sync" && <SwarmSyncView />}
+              {view === "vault" && <VaultView />}
+              {view === "deploy" && <DeployView />}
+              {view === "resilience" && <ResilienceView />}
             </>
           )}
         </main>
