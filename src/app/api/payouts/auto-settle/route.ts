@@ -21,6 +21,7 @@ import {
   type PayoutBatch,
 } from "@/lib/payout-state-machine";
 import "@/lib/rails/attijari";
+import "@/lib/rails/sepa";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

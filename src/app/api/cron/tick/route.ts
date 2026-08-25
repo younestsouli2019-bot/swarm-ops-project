@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { tick, ensureSeed, invalidateSwarmStateCache } from "@/lib/orchestrator";
+import { runCronAutopilot } from "@/lib/cron-autopilot";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -9,6 +10,7 @@ export const revalidate = 0;
  *
  * Runs one full orchestration cycle automatically, every 2 minutes.
  * Also triggers auto-settle for any approved PayoutBatches.
+ * Runs all cron autopilot subsystems (diagnostics, health, reconciliation, etc.).
  * Secured by CRON_SECRET.
  */
 export async function GET(req: Request) {
@@ -29,9 +31,6 @@ export async function GET(req: Request) {
     // Auto-settle any approved PayoutBatches via Attijariwafa API
     let settleResult = null;
     try {
-      const baseUrl = process.env.VERCEL_URL
-        ? `https://${process.env.VERCEL_URL}`
-        : "https://swarm-ops-project.vercel.app";
       const settleRes = await fetch("https://swarm-ops-project.vercel.app/api/payouts/auto-settle", {
         method: "POST",
         headers: {
@@ -45,11 +44,20 @@ export async function GET(req: Request) {
       settleResult = { error: "auto-settle fetch failed" };
     }
 
+    // Run all cron autopilot subsystems (diagnostics, health, reconciliation, guardrails)
+    let autopilotResult = null;
+    try {
+      autopilotResult = await runCronAutopilot();
+    } catch {
+      autopilotResult = { error: "cron autopilot failed" };
+    }
+
     return NextResponse.json({
       source: "cron",
       timestamp: new Date().toISOString(),
       ...report,
       auto_settle: settleResult,
+      cron_autopilot: autopilotResult,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
