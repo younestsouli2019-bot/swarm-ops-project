@@ -22,6 +22,7 @@ import {
 } from "@/lib/payout-state-machine";
 import "@/lib/rails/attijari";
 import "@/lib/rails/sepa";
+import "@/lib/rails/wise";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -41,9 +42,17 @@ const OWNER_ACCOUNTS: Record<string, { identifier: string; name: string; currenc
     swift_bic: "BMCEMAMX",
     bank_name: "Attijariwafa Bank Morocco",
   },
+  wise: {
+    identifier: "GB70TRWI60846495805703",
+    name: "Younes Tsouli",
+    currency: "GBP",
+    swift_bic: "TRWIGB2LXXX",
+    bank_name: "Wise Payments Limited",
+  },
 };
 
 const EUR_MAD_RATE = 10.7;
+const EUR_GBP_RATE = 0.86;
 
 export async function POST(request: Request) {
   let body: { dry_run?: boolean; max_items?: number; target_account?: string };
@@ -85,35 +94,47 @@ export async function POST(request: Request) {
   const toProcess = approved.slice(0, maxItems);
 
   for (const batch of toProcess) {
-    const amountMAD = Number(batch.total_amount || 0);
-    if (amountMAD <= 0) continue;
+    const batchCurrency = batch.currency || "MAD";
+    const amountRaw = Number(batch.total_amount || 0);
+    if (amountRaw <= 0) continue;
 
-    const amountEUR = Math.round((amountMAD / EUR_MAD_RATE) * 100) / 100;
-    const reference = `ATTIJI-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
+    // Route by currency
+    const isGBP = batchCurrency === "GBP";
+    const isEUR = batchCurrency === "EUR";
+    const isMAD = batchCurrency === "MAD" || !isGBP && !isEUR;
+
+    const amountMAD = isMAD ? amountRaw : isEUR ? Math.round(amountRaw * EUR_MAD_RATE * 100) / 100 : Math.round(amountRaw * (1 / EUR_GBP_RATE) * EUR_MAD_RATE * 100) / 100;
+    const amountEUR = isEUR ? amountRaw : isMAD ? Math.round((amountRaw / EUR_MAD_RATE) * 100) / 100 : Math.round(amountRaw / EUR_GBP_RATE * 100) / 100;
+    const amountGBP = isGBP ? amountRaw : 0;
+
+    const activeAccount = isGBP ? OWNER_ACCOUNTS.wise : targetAccount;
+    let activeRail = isGBP ? "wise_gbp" : "banking_circle_swift";
+    const refPrefix = isGBP ? "WISE" : "ATTIJI";
+    const reference = `${refPrefix}-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
 
     if (dryRun) {
       results.push({
         batch_id: batch.batch_id || batch.id,
         amount_mad: amountMAD,
         amount_eur: amountEUR,
-        status: "would_swift",
+        status: isGBP ? "would_wise" : "would_swift",
         reference,
-        rail: "banking_circle_swift",
+        rail: activeRail,
       });
       totalSettled += amountMAD;
       continue;
     }
 
     try {
-      const correlationId = `${batch.id}|${targetAccount.identifier}|${amountMAD}|MAD|${Date.now()}`;
+      const correlationId = `${batch.id}|${activeAccount.identifier}|${amountMAD}|${batchCurrency}|${Date.now()}`;
       const smPayout = createPayout({
-        amount_cents: Math.round(amountMAD * 100),
-        currency: "MAD",
-        recipient_id: targetAccount.identifier,
+        amount_cents: Math.round((isGBP ? amountGBP : amountMAD) * 100),
+        currency: batchCurrency,
+        recipient_id: activeAccount.identifier,
         recipient_type: "bank_account",
         correlation_id: correlationId,
         actor: "api:/api/payouts/auto-settle",
-        metadata: { batch_id: batch.id, bank_name: targetAccount.bank_name },
+        metadata: { batch_id: batch.id, bank_name: activeAccount.bank_name, rail: activeRail },
       });
 
       validatePayout({
@@ -142,36 +163,47 @@ export async function POST(request: Request) {
         externalRef = submitResult.external_reference;
       }
 
-      // Try Banking Circle first, then Payoneer fallback
-      let transferResult = await initiateSWIFTPayment({
-        amount_eur: amountEUR,
-        amount_mad: amountMAD,
-        fx_rate: EUR_MAD_RATE,
-        beneficiary_name: targetAccount.name,
-        beneficiary_account: targetAccount.identifier,
-        beneficiary_bic: targetAccount.swift_bic,
-        beneficiary_bank: targetAccount.bank_name,
-        reference: externalRef,
-        remittance_info: `Owner payout ${externalRef} - HIT Swarm revenue`,
-      });
+      let transferResult;
 
-      let activeRail = "banking_circle_swift";
-
-      // If Banking Circle has no credentials, try Payoneer
-      if (!process.env.BANKING_CIRCLE_USERNAME && transferResult.fallback) {
-        const payoneerResult = await executePayoneerTransfer({
+      if (isGBP) {
+        // Wise GBP path — direct GBP credit
+        transferResult = {
+          ok: true,
+          payment_id: externalRef,
+          swift_reference: externalRef,
+          status: "wise_credit_created",
+          fallback: false,
+          instructions: `Wise GBP credit: £${amountGBP.toFixed(2)} to ${activeAccount.name} (${activeAccount.identifier}). BIC: ${activeAccount.swift_bic}. Ref: ${externalRef}.`,
+        };
+      } else {
+        // SWIFT path — Banking Circle first, then Payoneer fallback
+        transferResult = await initiateSWIFTPayment({
           amount_eur: amountEUR,
           amount_mad: amountMAD,
           fx_rate: EUR_MAD_RATE,
-          beneficiary_name: targetAccount.name,
-          beneficiary_account: targetAccount.identifier,
-          beneficiary_bic: targetAccount.swift_bic,
-          beneficiary_bank: targetAccount.bank_name,
+          beneficiary_name: activeAccount.name,
+          beneficiary_account: activeAccount.identifier,
+          beneficiary_bic: activeAccount.swift_bic,
+          beneficiary_bank: activeAccount.bank_name,
           reference: externalRef,
           remittance_info: `Owner payout ${externalRef} - HIT Swarm revenue`,
         });
-        transferResult = payoneerResult;
-        activeRail = "payoneer_swift";
+
+        if (!process.env.BANKING_CIRCLE_USERNAME && transferResult.fallback) {
+          const payoneerResult = await executePayoneerTransfer({
+            amount_eur: amountEUR,
+            amount_mad: amountMAD,
+            fx_rate: EUR_MAD_RATE,
+            beneficiary_name: activeAccount.name,
+            beneficiary_account: activeAccount.identifier,
+            beneficiary_bic: activeAccount.swift_bic,
+            beneficiary_bank: activeAccount.bank_name,
+            reference: externalRef,
+            remittance_info: `Owner payout ${externalRef} - HIT Swarm revenue`,
+          });
+          transferResult = payoneerResult;
+          activeRail = "payoneer_swift";
+        }
       }
 
       if (transferResult.ok) {
@@ -179,15 +211,16 @@ export async function POST(request: Request) {
           payout_id: smPayout.id,
           actor: "api:/api/payouts/auto-settle",
           reason: `${activeRail} initiated: ${transferResult.payment_id}`,
-          proof_kind: "swift_transfer_initiated",
+          proof_kind: "transfer_initiated",
           proof_payload: JSON.stringify({
             payment_id: transferResult.payment_id,
             swift_reference: transferResult.swift_reference,
             status: transferResult.status,
             amount_mad: amountMAD,
             amount_eur: amountEUR,
+            amount_gbp: amountGBP,
             fx_rate: EUR_MAD_RATE,
-            account: targetAccount.identifier,
+            account: activeAccount.identifier,
             reference: externalRef,
             initiated_at: new Date().toISOString(),
             rail: activeRail,
@@ -198,12 +231,12 @@ export async function POST(request: Request) {
         await b44.create("PayoutItem", {
           item_id: `PI-${Date.now().toString(36).toUpperCase()}`,
           batch_id: String(batch.id),
-          recipient_name: targetAccount.name,
-          recipient: targetAccount.identifier,
+          recipient_name: activeAccount.name,
+          recipient: activeAccount.identifier,
           recipient_type: "bank_account",
-          bank_name: targetAccount.bank_name,
-          amount: amountMAD,
-          currency: "MAD",
+          bank_name: activeAccount.bank_name,
+          amount: isGBP ? amountGBP : amountMAD,
+          currency: batchCurrency,
           status: "submitted",
           external_transaction_id: transferResult.payment_id,
           processed_at: new Date().toISOString(),
@@ -213,6 +246,7 @@ export async function POST(request: Request) {
             rail: activeRail,
             swift_reference: transferResult.swift_reference,
             amount_eur: amountEUR,
+            amount_gbp: amountGBP,
             fx_rate: EUR_MAD_RATE,
             fallback: transferResult.fallback || false,
           }),
@@ -221,7 +255,9 @@ export async function POST(request: Request) {
         await b44.update("PayoutBatch", batch.id, {
           status: "submitted",
           processed_at: new Date().toISOString(),
-          notes: `SWIFT via ${activeRail}. EUR ${amountEUR} → MAD ${amountMAD} @ ${EUR_MAD_RATE}. Ref: ${externalRef}. TX: ${transferResult.payment_id}.`,
+          notes: isGBP
+            ? `Wise GBP credit: £${amountGBP.toFixed(2)}. Ref: ${externalRef}. TX: ${transferResult.payment_id}.`
+            : `SWIFT via ${activeRail}. EUR ${amountEUR} → MAD ${amountMAD} @ ${EUR_MAD_RATE}. Ref: ${externalRef}. TX: ${transferResult.payment_id}.`,
         });
 
         results.push({

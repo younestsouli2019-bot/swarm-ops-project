@@ -24,15 +24,15 @@ export function AccountsView() {
         <Badge variant="outline" className="text-[10px] font-mono">{accounts.length} accounts</Badge>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {["MAD", "EUR", "USD"].map((ccy) => (
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {["GBP", "MAD", "EUR", "USD"].map((ccy) => (
           <Card key={ccy}>
             <CardHeader className="pb-2">
               <CardTitle className="text-xs font-medium text-muted-foreground">{ccy} Balance</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold font-mono">
-                {ccy === "MAD" ? `MAD ${(totals.mad ?? 0).toLocaleString()}` : ccy === "EUR" ? `€${(totals.eur ?? 0).toLocaleString()}` : `$${(totals.usd ?? 0).toLocaleString()}`}
+                {ccy === "GBP" ? `£${(totals.gbp ?? 0).toLocaleString()}` : ccy === "MAD" ? `MAD ${(totals.mad ?? 0).toLocaleString()}` : ccy === "EUR" ? `€${(totals.eur ?? 0).toLocaleString()}` : `$${(totals.usd ?? 0).toLocaleString()}`}
               </div>
             </CardContent>
           </Card>

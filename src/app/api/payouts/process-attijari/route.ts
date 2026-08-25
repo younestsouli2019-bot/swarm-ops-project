@@ -24,6 +24,7 @@ import {
 import { assertOwnerRouting } from "@/lib/owner-accounts";
 import "@/lib/rails/attijari";
 import "@/lib/rails/sepa";
+import "@/lib/rails/wise";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
