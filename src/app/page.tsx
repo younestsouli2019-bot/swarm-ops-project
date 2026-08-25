@@ -33,6 +33,7 @@ import {
   Store,
   WorkflowIcon,
   Zap,
+  ArrowRight,
 } from "@/components/swarm/icons";
 import { Providers, useSwarmState, useTick, useAutopilot } from "@/components/swarm/providers";
 import { DashboardView } from "@/components/swarm/dashboard-view";
@@ -50,6 +51,7 @@ import { AgentSafetyView } from "@/components/swarm/agent-safety-view";
 import { TokenOptimizerView } from "@/components/swarm/token-optimizer-view";
 import { OmnigentView } from "@/components/swarm/omnigent-view";
 import { SettlementView } from "@/components/swarm/settlement-view";
+import { MoneyFlowView } from "@/components/swarm/money-flow-view";
 import { fmtUsd, timeAgo } from "@/components/swarm/primitives";
 import type { LucideIcon } from "lucide-react";
 
@@ -68,7 +70,8 @@ type ViewId =
   | "agent-safety"
   | "token-optimizer"
   | "omnigent"
-  | "settlement";
+  | "settlement"
+  | "money-flow";
 
 interface NavItem {
   id: ViewId;
@@ -90,6 +93,7 @@ const NAV: NavItem[] = [
   { id: "token-optimizer", label: "Token Optimizer", icon: Zap, hint: "Symbol extraction · code analysis · MCP · AI suggestions" },
   { id: "omnigent", label: "Omnigent", icon: Brain, hint: "Tiered memory + capability-aware load balancer" },
   { id: "settlement", label: "Settlement", icon: Landmark, hint: "2PC ledger · three-way match · oracle-verified receipts" },
+  { id: "money-flow", label: "Money Flow", icon: ArrowRight, hint: "Real-time pipeline · where money is stuck" },
   { id: "integrity", label: "Integrity", icon: Shield, hint: "Anti-pattern guard + breach log" },
   { id: "guardrails", label: "Guardrails", icon: ShieldAlert, hint: "Risk-category safeguards + self-redress" },
   { id: "agent-safety", label: "Agent Safety", icon: ShieldCheck, hint: "Per-capability guardrail bindings" },
@@ -461,6 +465,7 @@ function Shell() {
               {view === "token-optimizer" && <TokenOptimizerView />}
               {view === "omnigent" && <OmnigentView />}
               {view === "settlement" && <SettlementView />}
+              {view === "money-flow" && <MoneyFlowView />}
             </>
           )}
         </main>
