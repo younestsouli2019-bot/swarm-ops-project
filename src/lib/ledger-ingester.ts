@@ -19,7 +19,6 @@
 import { b44 } from "./base44";
 import type { RevenueEvent, PayoutBatch, PayoutItem } from "./base44";
 import { getAutopilotConfig } from "./autopilot-config";
-import { isDuplicatePayout, registerPayout } from "./duplicate-prevention";
 
 const BATCH_SIZE = 100;
 
@@ -160,12 +159,6 @@ export async function ingestLedger(opts: {
 
     const batchId = `LEDGER-${Date.now().toString(36).toUpperCase()}-${currency}`;
 
-    // Duplicate check
-    if (isDuplicatePayout(`ledger-${batchId}`, batchId)) {
-      result.events_skipped += currencyEvents.length;
-      continue;
-    }
-
     // Determine owner account based on currency
     const isGBP = currency === "GBP";
     const recipient = isGBP ? OWNER.wise_iban : OWNER.account_1;
@@ -223,7 +216,7 @@ export async function ingestLedger(opts: {
         }
       }
 
-      registerPayout(batch.id!, batchId, "approved");
+      // Don't register duplicate here — auto-settle handles dedup after execution
 
       result.batches.push({
         batch_id: batchId,

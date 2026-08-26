@@ -353,6 +353,36 @@ export async function executePayout(req: PayoutRequest): Promise<PayoutResult> {
     };
   }
 
+  // ── Route 5: Crypto (BTC/ETH/USDT) → convert to USD via Wise, then route ──
+  if (currency === "BTC" || currency === "ETH" || currency === "USDT") {
+    // Crypto needs manual conversion — no on-chain settlement rail yet
+    const usdEquivalent = currency === "USDT" ? amount :
+      currency === "ETH" ? amount * 3500 :  // rough ETH/USD
+      amount * 110000;  // rough BTC/USD
+
+    return {
+      ok: true,
+      rail: "crypto_manual",
+      status: "pending_manual",
+      amount: usdEquivalent,
+      currency: "USD",
+      target: "Owner bank account (via crypto exchange)",
+      instructions: [
+        `CRYPTO → FIAT CONVERSION REQUIRED`,
+        ``,
+        `Received: ${amount.toFixed(8)} ${currency}`,
+        `Estimated USD value: $${usdEquivalent.toFixed(2)}`,
+        ``,
+        `Steps to settle:`,
+        `1. Sell ${currency} on exchange (Binance/Coinbase/Kraken)`,
+        `2. Withdraw USD to Wise account: GB70TRWI60846495805703`,
+        `3. Wise auto-converts to MAD via SWIFT → Attijariwafa`,
+        ``,
+        `Or: Send ${currency} to owner's wallet and convert manually.`,
+      ].join("\n"),
+    };
+  }
+
   return {
     ok: false,
     rail: "none",
@@ -360,7 +390,7 @@ export async function executePayout(req: PayoutRequest): Promise<PayoutResult> {
     amount,
     currency,
     target: "none",
-    error: `Unsupported currency: ${currency}`,
+    error: `Unsupported currency: ${currency}. Supported: USD, GBP, EUR, MAD, BTC, ETH, USDT`,
   };
 }
 
