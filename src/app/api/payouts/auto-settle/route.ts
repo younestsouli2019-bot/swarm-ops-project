@@ -319,7 +319,7 @@ export async function POST(request: Request) {
       beneficiary: `${targetAccount.bank_name} MAD (${targetAccount.identifier})`,
       swift_bic_beneficiary: targetAccount.swift_bic,
     },
-  });
+    });
 }
- 
- 
+
+
