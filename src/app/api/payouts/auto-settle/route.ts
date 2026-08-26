@@ -100,6 +100,15 @@ export async function POST(request: Request) {
       ok: true,
       message: "No PayoutBatches to auto-settle",
       processed: 0,
+      fx_rates: {
+        eur_mad: { rate: eurMadRate.rate, source: eurMadRate.source },
+        eur_gbp: { rate: eurGbpRate.rate, source: eurGbpRate.source },
+      },
+      wise_configured: WISE_CONFIGURED,
+      autopilot: {
+        enabled: autopilotConfig.settlement_enabled,
+        max_auto_amount_mad: autopilotConfig.max_auto_amount_mad,
+      },
     });
   }
 
