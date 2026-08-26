@@ -3,9 +3,9 @@
  *
  * Routes payments to the best available rail by currency:
  *   GBP → Wise API (domestic credit to owner's Wise GBP account)
- *   EUR → Wise API (SWIFT to Attijariwafa MAD)
- *   MAD → Wise API (SWIFT to Attijariwafa MAD, or ChariBaaS if available)
- *   USD → Wise API (convert to GBP/EUR, then route)
+ *   USD → Dwolla ACH (US domestic) → Wise SWIFT → Attijari MAD
+ *   EUR → Wise SWIFT → Attijari MAD (or Currencycloud if configured)
+ *   MAD → Wise SWIFT to Attijariwafa MAD
  *
  * Priority: real API > manual fallback. If no API credentials, returns
  * pending_manual with instructions (never silently drops money).
@@ -14,6 +14,10 @@
  *   WISE_API_TOKEN        - Real Wise API token
  *   WISE_PROFILE_ID       - Wise profile ID
  *   WISE_SOURCE_ACCOUNT   - Our IBAN (default: GB70TRWI60846495805703)
+ *   DWOLLA_KEY            - Dwolla application key
+ *   DWOLLA_SECRET         - Dwolla application secret
+ *   CURRENCYCLOUD_API_KEY - Currencycloud API key
+ *   CURRENCYCLOUD_LOGIN_ID - Currencycloud login ID
  *   CHARIPAY_API_KEY      - ChariBaaS API key (optional, for MAD direct)
  */
 
@@ -23,6 +27,18 @@ import {
   sendSWIFTTransfer,
   type WiseTransferResult,
 } from "@/lib/wise-api";
+import {
+  DWOLLA_CONFIGURED,
+  createTransfer as dwollaTransfer,
+  type DwollaTransferResult,
+} from "@/lib/rails/dwolla";
+import {
+  CURRENCYCLOUD_CONFIGURED,
+  createConversion,
+  createPayment,
+  getRate,
+  type CCPaymentResult,
+} from "@/lib/rails/currencycloud";
 import { randomUUID } from "crypto";
 
 // ─── Owner Accounts ─────────────────────────────────────────────────
@@ -146,11 +162,41 @@ export async function executePayout(req: PayoutRequest): Promise<PayoutResult> {
     };
   }
 
-  // ── Route 2: USD → convert to EUR, then SWIFT ──
+  // ── Route 2: USD → Dwolla ACH (US domestic) or Wise SWIFT → Attijari MAD ──
   if (currency === "USD") {
     const eurAmount = Math.round(amount * USD_EUR_RATE * 100) / 100;
     const madAmount = Math.round(eurAmount * EUR_MAD_RATE * 100) / 100;
 
+    // Priority 1: Dwolla ACH for US domestic transfers
+    if (DWOLLA_CONFIGURED && process.env.DWOLLA_MASTER_FUNDING_SOURCE) {
+      try {
+        const dwollaResult = await dwollaTransfer({
+          source: process.env.DWOLLA_MASTER_FUNDING_SOURCE,
+          destination: process.env.DWOLLA_DESTINATION_FUNDING_SOURCE || process.env.DWOLLA_MASTER_FUNDING_SOURCE,
+          amount: amount.toFixed(2),
+          currency: "USD",
+          correlationId: reference,
+          metadata: { purpose: description || `Owner payout ${reference}` },
+        });
+
+        if (dwollaResult.ok) {
+          return {
+            ok: true,
+            rail: "dwolla_ach",
+            transfer_id: dwollaResult.transfer_id,
+            status: dwollaResult.status || "processing",
+            amount,
+            currency: "USD",
+            target: "US Bank via Dwolla ACH",
+            instructions: `USD $${amount.toFixed(2)} sent via Dwolla ACH. Will convert to MAD on arrival.`,
+          };
+        }
+      } catch {
+        // Fall through to Wise SWIFT
+      }
+    }
+
+    // Priority 2: Wise SWIFT conversion
     if (WISE_CONFIGURED) {
       const result = await sendSWIFTTransfer(
         "EUR",
@@ -190,10 +236,11 @@ export async function executePayout(req: PayoutRequest): Promise<PayoutResult> {
     };
   }
 
-  // ── Route 3: EUR → SWIFT to Attijariwafa MAD ──
+  // ── Route 3: EUR → SWIFT to Attijariwafa MAD (Wise or Currencycloud) ──
   if (currency === "EUR") {
     const madAmount = Math.round(amount * EUR_MAD_RATE * 100) / 100;
 
+    // Priority 1: Wise SWIFT
     if (WISE_CONFIGURED) {
       const result = await sendSWIFTTransfer(
         "EUR",
@@ -219,6 +266,36 @@ export async function executePayout(req: PayoutRequest): Promise<PayoutResult> {
           fee: result.fee,
           target: "Attijariwafa MAD (via Wise SWIFT)",
         };
+      }
+    }
+
+    // Priority 2: Currencycloud cross-border
+    if (CURRENCYCLOUD_CONFIGURED) {
+      try {
+        const ccResult = await createPayment({
+          beneficiary_name: target.name,
+          beneficiary_country: target.country,
+          beneficiary_bank_name: target.bank,
+          beneficiary_iban: target.iban,
+          beneficiary_swift_bic: target.bic,
+          amount: amount.toFixed(2),
+          currency: "EUR",
+          reference,
+        });
+
+        if (ccResult.ok) {
+          return {
+            ok: true,
+            rail: "currencycloud",
+            transfer_id: ccResult.payment_id,
+            status: ccResult.status || "processing",
+            amount: madAmount,
+            currency: "MAD",
+            target: "Attijariwafa MAD (via Currencycloud)",
+          };
+        }
+      } catch {
+        // Fall through to manual
       }
     }
 
