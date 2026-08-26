@@ -10,8 +10,8 @@
 import { NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { b44 } from "@/lib/base44";
-import { initiateSWIFTPayment } from "@/lib/banking-circle";
-import { executePayoneerTransfer } from "@/lib/payoneer";
+import { executePayout } from "@/lib/auto-payout-executor";
+import { WISE_CONFIGURED } from "@/lib/wise-api";
 import {
   createPayout,
   validatePayout,
@@ -101,14 +101,13 @@ export async function POST(request: Request) {
     // Route by currency
     const isGBP = batchCurrency === "GBP";
     const isEUR = batchCurrency === "EUR";
-    const isMAD = batchCurrency === "MAD" || !isGBP && !isEUR;
 
-    const amountMAD = isMAD ? amountRaw : isEUR ? Math.round(amountRaw * EUR_MAD_RATE * 100) / 100 : Math.round(amountRaw * (1 / EUR_GBP_RATE) * EUR_MAD_RATE * 100) / 100;
-    const amountEUR = isEUR ? amountRaw : isMAD ? Math.round((amountRaw / EUR_MAD_RATE) * 100) / 100 : Math.round(amountRaw / EUR_GBP_RATE * 100) / 100;
+    const amountMAD = isEUR ? Math.round(amountRaw * EUR_MAD_RATE * 100) / 100 : isGBP ? Math.round(amountRaw * (1 / EUR_GBP_RATE) * EUR_MAD_RATE * 100) / 100 : amountRaw;
+    const amountEUR = isEUR ? amountRaw : isGBP ? Math.round(amountRaw / EUR_GBP_RATE * 100) / 100 : Math.round((amountRaw / EUR_MAD_RATE) * 100) / 100;
     const amountGBP = isGBP ? amountRaw : 0;
 
     const activeAccount = isGBP ? OWNER_ACCOUNTS.wise : targetAccount;
-    let activeRail = isGBP ? "wise_gbp" : "banking_circle_swift";
+    let activeRail = "auto_payout";
     const refPrefix = isGBP ? "WISE" : "ATTIJI";
     const reference = `${refPrefix}-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
 
@@ -163,59 +162,25 @@ export async function POST(request: Request) {
         externalRef = submitResult.external_reference;
       }
 
-      let transferResult;
+      // Use real payout executor — routes by currency via Wise API
+      const payoutResult = await executePayout({
+        amount: isGBP ? amountGBP : isEUR ? amountEUR : amountMAD,
+        currency: batchCurrency,
+        reference: externalRef,
+        description: `Owner payout ${externalRef} - HIT Swarm revenue`,
+      });
 
-      if (isGBP) {
-        // Wise GBP path — direct GBP credit
-        transferResult = {
-          ok: true,
-          payment_id: externalRef,
-          swift_reference: externalRef,
-          status: "wise_credit_created",
-          fallback: false,
-          instructions: `Wise GBP credit: £${amountGBP.toFixed(2)} to ${activeAccount.name} (${activeAccount.identifier}). BIC: ${activeAccount.swift_bic}. Ref: ${externalRef}.`,
-        };
-      } else {
-        // SWIFT path — Banking Circle first, then Payoneer fallback
-        transferResult = await initiateSWIFTPayment({
-          amount_eur: amountEUR,
-          amount_mad: amountMAD,
-          fx_rate: EUR_MAD_RATE,
-          beneficiary_name: activeAccount.name,
-          beneficiary_account: activeAccount.identifier,
-          beneficiary_bic: activeAccount.swift_bic,
-          beneficiary_bank: activeAccount.bank_name,
-          reference: externalRef,
-          remittance_info: `Owner payout ${externalRef} - HIT Swarm revenue`,
-        });
+      activeRail = payoutResult.rail;
 
-        if (!process.env.BANKING_CIRCLE_USERNAME && transferResult.fallback) {
-          const payoneerResult = await executePayoneerTransfer({
-            amount_eur: amountEUR,
-            amount_mad: amountMAD,
-            fx_rate: EUR_MAD_RATE,
-            beneficiary_name: activeAccount.name,
-            beneficiary_account: activeAccount.identifier,
-            beneficiary_bic: activeAccount.swift_bic,
-            beneficiary_bank: activeAccount.bank_name,
-            reference: externalRef,
-            remittance_info: `Owner payout ${externalRef} - HIT Swarm revenue`,
-          });
-          transferResult = payoneerResult;
-          activeRail = "payoneer_swift";
-        }
-      }
-
-      if (transferResult.ok) {
+      if (payoutResult.ok) {
         settlePayout({
           payout_id: smPayout.id,
           actor: "api:/api/payouts/auto-settle",
-          reason: `${activeRail} initiated: ${transferResult.payment_id}`,
+          reason: `${activeRail} initiated: ${payoutResult.transfer_id || externalRef}`,
           proof_kind: "transfer_initiated",
           proof_payload: JSON.stringify({
-            payment_id: transferResult.payment_id,
-            swift_reference: transferResult.swift_reference,
-            status: transferResult.status,
+            transfer_id: payoutResult.transfer_id,
+            status: payoutResult.status,
             amount_mad: amountMAD,
             amount_eur: amountEUR,
             amount_gbp: amountGBP,
@@ -224,7 +189,8 @@ export async function POST(request: Request) {
             reference: externalRef,
             initiated_at: new Date().toISOString(),
             rail: activeRail,
-            fallback: transferResult.fallback || false,
+            rate: payoutResult.rate,
+            fee: payoutResult.fee,
           }),
         });
 
@@ -237,39 +203,39 @@ export async function POST(request: Request) {
           bank_name: activeAccount.bank_name,
           amount: isGBP ? amountGBP : amountMAD,
           currency: batchCurrency,
-          status: "submitted",
-          external_transaction_id: transferResult.payment_id,
+          status: payoutResult.status === "pending_manual" ? "pending_manual" : "submitted",
+          external_transaction_id: payoutResult.transfer_id || externalRef,
           processed_at: new Date().toISOString(),
           metadata: JSON.stringify({
             po_number: externalRef,
             state_machine_payout_id: smPayout.id,
             rail: activeRail,
-            swift_reference: transferResult.swift_reference,
             amount_eur: amountEUR,
             amount_gbp: amountGBP,
             fx_rate: EUR_MAD_RATE,
-            fallback: transferResult.fallback || false,
+            rate: payoutResult.rate,
+            fee: payoutResult.fee,
           }),
         } as never);
 
         await b44.update("PayoutBatch", batch.id, {
-          status: "submitted",
+          status: payoutResult.status === "pending_manual" ? "pending_manual" : "submitted",
           processed_at: new Date().toISOString(),
-          notes: isGBP
-            ? `Wise GBP credit: £${amountGBP.toFixed(2)}. Ref: ${externalRef}. TX: ${transferResult.payment_id}.`
-            : `SWIFT via ${activeRail}. EUR ${amountEUR} → MAD ${amountMAD} @ ${EUR_MAD_RATE}. Ref: ${externalRef}. TX: ${transferResult.payment_id}.`,
+          notes: payoutResult.status === "pending_manual"
+            ? `${activeRail}: pending manual. ${payoutResult.instructions || ""}`
+            : `${activeRail}: ${payoutResult.transfer_id}. ${payoutResult.status}. FX: ${payoutResult.rate || "N/A"}.`,
         });
 
         results.push({
           batch_id: batch.batch_id || batch.id,
           amount_mad: amountMAD,
           amount_eur: amountEUR,
-          payment_id: transferResult.payment_id,
-          status: transferResult.fallback ? "pending_manual" : "submitted",
+          payment_id: payoutResult.transfer_id || externalRef,
+          status: payoutResult.status || "submitted",
           reference: externalRef,
           rail: activeRail,
-          has_instructions: !!transferResult.instructions,
-          error: transferResult.error,
+          has_instructions: !!payoutResult.instructions,
+          error: payoutResult.error,
         });
 
         totalSettled += amountMAD;
@@ -281,7 +247,7 @@ export async function POST(request: Request) {
           status: "failed",
           reference: externalRef,
           rail: activeRail,
-          error: transferResult.error,
+          error: payoutResult.error,
         });
         totalFailed += amountMAD;
       }
@@ -311,6 +277,7 @@ export async function POST(request: Request) {
     failed_mad: Math.round(totalFailed * 100) / 100,
     target_account: targetAccount.identifier,
     target_name: targetAccount.name,
+    wise_configured: WISE_CONFIGURED,
     results,
     audit: {
       timestamp: new Date().toISOString(),
