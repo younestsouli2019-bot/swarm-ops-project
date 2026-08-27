@@ -203,6 +203,18 @@ const PROVIDER_PORTALS: Record<string, { portal: string; docs: string; est_minut
       "GLM-4.6 is the recommended default in this sandbox",
     ],
   },
+  nvidia: {
+    portal: "https://build.nvidia.com/explore/discover/keys",
+    docs: "https://docs.api.nvidia.com/nim/reference/overview",
+    est_minutes: 3,
+    instructions: [
+      "Sign up at build.nvidia.com (free NVIDIA developer account)",
+      "Navigate to Explore → API Keys → Generate Key",
+      "Copy the nvapi-... key",
+      "Add to .env: NVIDIA_API_KEY=nvapi-...",
+      "Free tier: 1000 credits, 500 req/day — 55+ models available",
+    ],
+  },
 };
 
 // ---------------------------------------------------------------------------

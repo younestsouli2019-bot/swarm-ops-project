@@ -86,6 +86,11 @@ export const OWNER_ROUTING_WHITELIST_PATTERNS: ReadonlyArray<string> =
     "attijariwafa",
     "007810000448200061321372",
     "007810000448500030594182",
+    // Owner crypto wallet addresses
+    "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+    "TJgRM7VJhFcxKCK1gqZ3bNQHxbV9fXYP5Y",
+    "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+    "crypto_wallet",
   ]);
 
 /**

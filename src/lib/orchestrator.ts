@@ -206,6 +206,9 @@ const SWARM_AGENT_TYPES = [
   "devops",
   "vision",
   "document",
+  "sustainability_agent",
+  "ai_ml_products_expert",
+  "digital_courses_agent",
 ];
 
 const DEFAULT_AGENTS: Array<{
@@ -905,7 +908,13 @@ export async function dispatchTasks(): Promise<{
 
     const agentType = pickAgentTypeForTask(task.type, task.title);
     let candidates = byType.get(agentType) || [];
-    if (candidates.length === 0) continue;
+    if (candidates.length === 0) {
+      // Fallback: find any agent type with available capacity
+      for (const [type, agents] of byType) {
+        if (agents.length > 0) { candidates = agents; break; }
+      }
+      if (candidates.length === 0) continue;
+    }
     // pick the candidate with the lowest workload
     candidates.sort((x, y) => num(x.current_workload, 0) - num(y.current_workload, 0));
 
@@ -988,6 +997,9 @@ function pickAgentTypeForTask(
     quality_review: "seo_specialist",
     canva_template_creation: "design_generator",
     marketplace_listing: "listing_bot",
+    sustainability: "sustainability_agent",
+    ai_ml_products: "ai_ml_products_expert",
+    digital_courses: "digital_courses_agent",
   };
   const direct = map[taskType];
   if (direct) return direct;
@@ -996,6 +1008,9 @@ function pickAgentTypeForTask(
   if (lower.includes("etsy") || lower.includes("listing")) return "listing_bot";
   if (lower.includes("canva") || lower.includes("design")) return "design_generator";
   if (lower.includes("tweet") || lower.includes("linkedin")) return "social_manager";
+  if (lower.includes("eco") || lower.includes("sustain") || lower.includes("green")) return "sustainability_agent";
+  if (lower.includes("ai") || lower.includes("ml") || lower.includes("tool")) return "ai_ml_products_expert";
+  if (lower.includes("course") || lower.includes("education") || lower.includes("learn")) return "digital_courses_agent";
   return "data_analyst";
 }
 
@@ -1198,10 +1213,18 @@ export async function processTasks(): Promise<{
   }
 
   // Bump the revenue stream's available_for_payout
+  // FIX: re-read the stream from Base44 to get the latest value (avoid stale
+  // read from the batch start which may have been reset by maybePayout).
   if (stream && revenueCents > 0) {
-    await b44.update("RevenueStream", stream.id!, {
-      available_for_payout: num(stream.available_for_payout, 0) + revenueCents / 100,
-    } as never);
+    const freshStreams = (await b44.list("RevenueStream", { limit: 50 })) as RevenueStream[];
+    const freshStream = freshStreams.find(
+      (s) => s.name === DEFAULT_REVENUE_STREAM.name
+    );
+    if (freshStream) {
+      await b44.update("RevenueStream", freshStream.id!, {
+        available_for_payout: num(freshStream.available_for_payout, 0) + revenueCents / 100,
+      } as never);
+    }
   }
 
   // Also update the mission's revenue_generated
@@ -2371,10 +2394,10 @@ export async function getSwarmState(): Promise<SwarmState> {
       (await Promise.all([
         b44.list("Agent", { limit: 200 }),
         b44.list("Mission", { limit: 50 }),
-        b44.list("Task", { limit: 200, sort_by: "-created_date" }),
-        b44.list("RevenueEvent", { limit: 200, sort_by: "-created_date" }),
+        b44.list("Task", { limit: 500, sort_by: "-created_date" }),
+        b44.list("RevenueEvent", { limit: 500, sort_by: "-created_date" }),
         b44.list("RevenueStream", { limit: 50 }),
-        b44.list("PayoutBatch", { limit: 50, sort_by: "-created_date" }),
+        b44.list("PayoutBatch", { limit: 200, sort_by: "-created_date" }),
         b44.list("PayoutItem", { limit: 200, sort_by: "-created_date" }),
         b44.list("PayoutRecipient", { limit: 50 }),
         b44.list("AgentThreshold", { limit: 200 }),
@@ -2463,10 +2486,18 @@ export async function getSwarmState(): Promise<SwarmState> {
         paidOutRevenue: revByStatus("paid_out"),
         externallyConfirmedRevenue,
         unconfirmedPaidOutCount,
-        availableForPayout: revenueStreams.reduce(
-          (s, r) => s + num(r.available_for_payout, 0),
-          0
-        ),
+        availableForPayout: (() => {
+          // FIX: only count the default sweepable stream, not phantom streams.
+          // Non-default streams may have inflated available_for_payout from
+          // Base44 auto-seeding or prior sessions — they have no backing
+          // RevenueEvents and should not be included in payout calculations.
+          const defaultStream = revenueStreams.find(
+            (r) => r.name === DEFAULT_REVENUE_STREAM.name
+          );
+          return defaultStream
+            ? num(defaultStream.available_for_payout, 0)
+            : 0;
+        })(),
         openPayoutBatches: payoutBatches.filter(
           (b) =>
             b.status &&

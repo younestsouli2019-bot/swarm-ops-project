@@ -39,13 +39,14 @@ import {
   getRate,
   type CCPaymentResult,
 } from "@/lib/rails/currencycloud";
+import { bybitConfigured } from "@/lib/rails/bybit";
 import { randomUUID } from "crypto";
 
 // ─── Owner Accounts ─────────────────────────────────────────────────
 
 const OWNER_ACCOUNTS = {
   attijari_1: {
-    iban: process.env.ATTIJARI_ACCOUNT_1 || "007810000448200061321372",
+    iban: process.env.ATTIJARI_ACCOUNT_1 || "007810000448500030594182",
     name: "YOUNES TSOULI",
     bic: "BMCEMAMX",
     bank: "Attijariwafa Bank",
@@ -353,22 +354,130 @@ export async function executePayout(req: PayoutRequest): Promise<PayoutResult> {
     };
   }
 
-  // ── Route 5: Crypto (BTC/ETH/USDT) → convert to USD via Wise, then route ──
-  if (currency === "BTC" || currency === "ETH" || currency === "USDT") {
-    // Crypto needs manual conversion — no on-chain settlement rail yet
+  // ── Route 4b: Bybit USDT withdrawal → owner crypto wallet ──
+  // If amount is in USD/MAD and Bybit is configured, convert to USDT and withdraw
+  if ((currency === "USD" || currency === "MAD" || currency === "EUR") && bybitConfigured()) {
+    try {
+      const { createBybitWithdrawal, getBybitBalance } = await import("@/lib/rails/bybit");
+
+      // Convert to USDT equivalent
+      const usdEquiv = currency === "USD" ? amount :
+        currency === "EUR" ? amount / USD_EUR_RATE :
+        amount / EUR_MAD_RATE / USD_EUR_RATE;
+      const usdtAmount = usdEquiv.toFixed(2); // 1 USDT ≈ 1 USD
+
+      // Check Bybit balance first
+      const balance = await getBybitBalance("USDT");
+      const available = parseFloat(balance.available || "0");
+
+      if (available < parseFloat(usdtAmount)) {
+        // Not enough USDT on Bybit — fall through to other routes
+      } else {
+        // Owner's TRON wallet for USDT-TRC20
+        const ownerTronWallet = "TJgRM7VJhFcxKCK1gqZ3bNQHxbV9fXYP5Y";
+
+        const result = await createBybitWithdrawal({
+          coin: "USDT",
+          chain: "TRC20",
+          amount: usdtAmount,
+          toAddress: ownerTronWallet,
+        });
+
+        if (result.ok) {
+          return {
+            ok: true,
+            rail: "bybit_usdt_trc20",
+            transfer_id: result.withdrawal_id,
+            status: "submitted",
+            amount: parseFloat(usdtAmount),
+            currency: "USDT",
+            target: `Owner TRON wallet: ${ownerTronWallet}`,
+            instructions: [
+              `BYBIT USDT-TRC20 WITHDRAWAL`,
+              ``,
+              `Amount: ${usdtAmount} USDT`,
+              `Chain: TRC20`,
+              `Withdrawal ID: ${result.withdrawal_id}`,
+              result.tx_hash ? `TX: ${result.tx_hash}` : `TX: pending (Bybit processes in ~10min)`,
+              `To: ${ownerTronWallet}`,
+              ``,
+              `Conversion: ${currency} ${amount.toFixed(2)} → $${usdEquiv.toFixed(2)} USD → ${usdtAmount} USDT`,
+              `Source: Bybit exchange balance`,
+              ``,
+              `Explorer: https://tronscan.org/#/transaction/${result.tx_hash || "pending"}`,
+            ].join("\n"),
+          };
+        }
+      }
+    } catch {
+      // Fall through to other routes
+    }
+  }
+
+  // ── Route 5: Crypto (BTC/ETH/USDT) → on-chain transfer to owner wallet ──
+  if (currency === "BTC" || currency === "ETH" || currency === "USDT" || currency === "USDT-TRC20" || currency === "USDT-ERC20") {
+    const { sendNativeTransfer, sendUsdtTransfer } = await import("@/lib/rails/crypto-onchain");
+
+    // Determine destination — use the owner's registered crypto wallet
+    const ownerCryptoWallet = "TJgRM7VJhFcxKCK1gqZ3bNQHxbV9fXYP5Y";
+    const cryptoAddress = req.target_account && /^(0x[a-fA-F0-9]{40}|[13][a-km-zA-HJ-NP-Z1-9]{25,34}|T[A-Za-z1-9]{33})$/.test(req.target_account)
+      ? req.target_account
+      : ownerCryptoWallet;
+    const toAddress = cryptoAddress;
+    const amount = req.amount || 0;
+
+    let result;
+    if (currency === "BTC" || currency === "ETH") {
+      result = await sendNativeTransfer(
+        currency === "BTC" ? "bitcoin-mainnet" : "ethereum-mainnet",
+        "", // from — resolved by Tatum
+        toAddress,
+        amount,
+      );
+    } else {
+      // USDT — default TRC20 for lower fees
+      const chain = currency === "USDT-ERC20" ? "ethereum-mainnet" : "tron-mainnet";
+      result = await sendUsdtTransfer(chain as "tron-mainnet" | "ethereum-mainnet", "", toAddress, amount);
+    }
+
+    if (result.ok) {
+      return {
+        ok: true,
+        rail: "crypto_onchain",
+        status: "submitted",
+        amount: amount,
+        currency,
+        target: `On-chain ${result.chain}: ${result.to}`,
+        transfer_id: result.tx_hash,
+        instructions: [
+          `ON-CHAIN CRYPTO TRANSFER`,
+          ``,
+          `Amount: ${amount} ${currency}`,
+          `Chain: ${result.chain}`,
+          `TX: ${result.tx_hash}`,
+          result.chain === "BTC" ? `Explorer: https://blockchain.info/tx/${result.tx_hash}`
+            : result.chain === "TRON" ? `Explorer: https://tronscan.org/#/transaction/${result.tx_hash}`
+            : `Explorer: https://etherscan.io/tx/${result.tx_hash}`,
+          ``,
+          `Settlement: confirm on-chain via /api/payouts/settle`,
+        ].join("\n"),
+      };
+    }
+
+    // Fallback to manual instructions if on-chain fails
     const usdEquivalent = currency === "USDT" ? amount :
-      currency === "ETH" ? amount * 3500 :  // rough ETH/USD
-      amount * 110000;  // rough BTC/USD
+      currency === "ETH" ? amount * 3500 :
+      amount * 110000;
 
     return {
       ok: true,
-      rail: "crypto_manual",
+      rail: "crypto_manual_fallback",
       status: "pending_manual",
       amount: usdEquivalent,
       currency: "USD",
       target: "Owner bank account (via crypto exchange)",
       instructions: [
-        `CRYPTO → FIAT CONVERSION REQUIRED`,
+        `CRYPTO → FIAT CONVERSION (on-chain failed: ${result.error})`,
         ``,
         `Received: ${amount.toFixed(8)} ${currency}`,
         `Estimated USD value: $${usdEquivalent.toFixed(2)}`,

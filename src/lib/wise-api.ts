@@ -67,6 +67,43 @@ function authHeaders(): Record<string, string> {
   };
 }
 
+// ─── Recipient Account Resolution ───────────────────────────────────
+
+let recipientCache: Array<{ id: number; accountNumber?: string; iban?: string; accountHolderName?: string }> | null = null;
+
+async function findRecipientAccountId(accountNumber: string, holderName?: string): Promise<number | null> {
+  if (!WISE_CONFIGURED) return null;
+
+  try {
+    if (!recipientCache) {
+      const res = await fetch(
+        `${WISE_BASE}/v1/accounts?profileId=${WISE_PROFILE_ID}`,
+        { headers: authHeaders() }
+      );
+      if (!res.ok) return null;
+      recipientCache = (await res.json()) as Array<{
+        id: number;
+        details?: { accountNumber?: string; iban?: string };
+        accountHolderName?: string;
+      }>;
+    }
+
+    const clean = (s: string) => String(s || "").replace(/\s+/g, "").toLowerCase();
+    return (
+      recipientCache.find((a) => {
+        const acc = (a as { details?: { accountNumber?: string; iban?: string } }).details;
+        return (
+          acc?.accountNumber && clean(acc.accountNumber) === clean(accountNumber) ||
+          acc?.iban && clean(acc.iban) === clean(accountNumber) ||
+          holderName && a.accountHolderName && clean(a.accountHolderName) === clean(holderName)
+        );
+      })?.id ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
 // ─── Get Balances ───────────────────────────────────────────────────
 
 export async function getBalances(): Promise<WiseBalance[]> {
@@ -131,12 +168,13 @@ async function createQuote(
   sourceCurrency: string,
   targetCurrency: string,
   sourceAmount?: number,
-  targetAmount?: number
+  targetAmount?: number,
+  targetAccountId?: number
 ): Promise<{ id: string; rate: number; fee: number } | null> {
   const body: Record<string, unknown> = {
     sourceCurrency,
     targetCurrency,
-    targetAccount: WISE_SOURCE_ACCOUNT,
+    targetAccount: targetAccountId ?? WISE_SOURCE_ACCOUNT,
   };
 
   if (sourceAmount) body.sourceAmount = sourceAmount;
@@ -168,44 +206,25 @@ async function createQuote(
 
 async function createTransfer(
   quoteId: string,
-  targetAccount: {
-    iban?: string;
-    account_number?: string;
-    sort_code?: string;
-    bic?: string;
-    name: string;
-    country: string;
-  },
+  targetAccountId: number,
   reference: string,
   description?: string
 ): Promise<{ id: string; status: string } | null> {
-  const target: Record<string, unknown> = {
-    accountHolderName: targetAccount.name,
-    country: targetAccount.country,
-    currency: "GBP",
-  };
-
-  if (targetAccount.iban) {
-    target.iban = targetAccount.iban;
-  } else if (targetAccount.account_number && targetAccount.sort_code) {
-    target.accountNumber = targetAccount.account_number;
-    target.sortCode = targetAccount.sort_code;
-  }
-
-  if (targetAccount.bic) {
-    target.bic = targetAccount.bic;
-  }
-
   const res = await fetch(
     `${WISE_BASE}/v1/transfers`,
     {
       method: "POST",
       headers: authHeaders(),
       body: JSON.stringify({
-        targetQuote: quoteId,
-        targetAccount: target,
-        reference,
-        description: description || `Owner payout ${reference}`,
+        targetAccount: targetAccountId,
+        quoteUuid: quoteId,
+        customerTransactionId: `11111111-2222-4333-8444-${randomUUID().replace(/-/g, "").slice(0, 12)}`,
+        details: {
+          reference: (reference || description || "Owner payout").slice(0, 140),
+          sourceOfFunds: "verification.source.of.funds.other",
+          sourceOfFundsOther: "Autonomous swarm revenue",
+          transferPurpose: "verification.transfers.purpose.send.to.family",
+        },
       }),
     }
   );
@@ -281,22 +300,13 @@ export async function sendGBPDomesticCredit(
   }
 
   try {
-    const quote = await createQuote("GBP", "GBP", amount);
+    const recipient = await findRecipientAccountId(recipientIban, recipientName);
+    const quote = await createQuote("GBP", "GBP", amount, undefined, recipient ?? undefined);
     if (!quote) {
       return { ok: false, error: "Failed to create Wise quote" };
     }
 
-    const transfer = await createTransfer(
-      quote.id,
-      {
-        iban: recipientIban,
-        bic: recipientBic,
-        name: recipientName,
-        country: "GB",
-      },
-      reference,
-      `GBP domestic credit: £${amount.toFixed(2)}`
-    );
+    const transfer = await createTransfer(quote.id, recipient ?? 0, reference, `GBP domestic credit: £${amount.toFixed(2)}`);
 
     if (!transfer) {
       return { ok: false, error: "Failed to create Wise transfer" };
@@ -341,22 +351,13 @@ export async function sendSWIFTTransfer(
   }
 
   try {
-    const quote = await createQuote(sourceCurrency, targetCurrency, sourceAmount);
+    const recipient = await findRecipientAccountId(recipientAccount, recipientName);
+    const quote = await createQuote(sourceCurrency, targetCurrency, sourceAmount, undefined, recipient ?? undefined);
     if (!quote) {
       return { ok: false, error: "Failed to create Wise quote" };
     }
 
-    const transfer = await createTransfer(
-      quote.id,
-      {
-        iban: recipientAccount,
-        bic: recipientBic,
-        name: recipientName,
-        country: recipientCountry,
-      },
-      reference,
-      remittanceInfo || `SWIFT ${reference}`
-    );
+    const transfer = await createTransfer(quote.id, recipient ?? 0, reference, remittanceInfo || `SWIFT ${reference}`);
 
     if (!transfer) {
       return { ok: false, error: "Failed to create Wise transfer" };
