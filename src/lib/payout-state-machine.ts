@@ -713,6 +713,108 @@ export function listRailAdapters(): Array<{
   }));
 }
 
+// ─── Real-proof guard (watchdog facing) ──────────────────────────────
+//
+// Exposes a unified pass/fail verification used by the autonomous daemon
+// fan-out (api/swarm/daemon.mjs). The daemon halts deploy + delivery
+// loops until every invariant holds. Mirrors the deny/allow lists in
+// scripts/fraud-audit-baseline.mjs so the state machine and the audit
+// agree on what "real money moved" means.
+
+export interface PayoutGuardResult {
+  passed: boolean;
+  reason: string;
+  checks: Record<string, boolean>;
+  details: Record<string, string>;
+}
+
+/**
+ * Verify guard invariants across all in-memory payouts.
+ *   sequence  – no illegal phase jumps in the event log
+ *   proofs    – every settled/reconciled payout has a real receipt_hash
+ *               and (for reconciled) a bank_statement_ref
+ *   liquidity – settled + pending never exceeds the configured ceiling
+ *
+ * Autonomous agents may not authorize, but the daemon may CHECK the
+ * invariant set and refuse to proceed when it is violated.
+ */
+export function verifyPayoutGuard(): PayoutGuardResult {
+  const store = getStore();
+  const checks: Record<string, boolean> = { sequence: true, proofs: true, liquidity: true };
+  const details: Record<string, string> = {};
+
+  // 1. Sequence integrity — walk each payout's events in order.
+  let sequenceViolations = 0;
+  for (const item of store.items.values()) {
+    const evs = store.events
+      .filter((e) => e.payout_id === item.id)
+      .sort((a, b) => a.ts - b.ts);
+    let prev: string | null = null;
+    for (const ev of evs) {
+      if (prev !== null && !isValidTransition(prev as PayoutState, ev.to_state)) {
+        sequenceViolations++;
+      }
+      // track the state we came from for the next hop validity
+      prev = ev.to_state;
+    }
+  }
+  checks.sequence = sequenceViolations === 0;
+  details.sequence =
+    sequenceViolations === 0
+      ? "no illegal payout state transitions in event log"
+      : `${sequenceViolations} illegal payout state transitions detected`;
+
+  // 2. Proof integrity — settled/reconciled must carry a real receipt.
+  let proofViolations = 0;
+  let settledNoReceipt = 0;
+  let reconciledNoBankRef = 0;
+  for (const item of store.items.values()) {
+    if (item.state === "settled") {
+      if (!item.receipt_hash) {
+        settledNoReceipt++;
+        proofViolations++;
+      }
+    } else if (item.state === "reconciled") {
+      if (!item.receipt_hash) {
+        settledNoReceipt++;
+        proofViolations++;
+      }
+      if (!item.bank_statement_ref) {
+        reconciledNoBankRef++;
+        proofViolations++;
+      }
+    }
+  }
+  checks.proofs = proofViolations === 0;
+  details.proofs =
+    proofViolations === 0
+      ? "all settled/reconciled payouts carry real receipt proof"
+      : `${settledNoReceipt} settled without receipt_hash, ${reconciledNoBankRef} reconciled without bank_statement_ref`;
+
+  // 3. Liquidity — total moving value stays within the owner-approved ceiling.
+  const { total_settled_cents, total_pending_cents } = getStats();
+  const ceilingCents = Number(process.env.AUTO_APPROVE_THRESHOLD_USD || 5000) * 100;
+  const movingCents = total_settled_cents + total_pending_cents;
+  checks.liquidity = movingCents <= ceilingCents;
+  details.liquidity =
+    checks.liquidity
+      ? `moving value $${(movingCents / 100).toFixed(2)} within ceiling $${(ceilingCents / 100).toFixed(2)}`
+      : `moving value $${(movingCents / 100).toFixed(2)} EXCEEDS ceiling $${(ceilingCents / 100).toFixed(2)}`;
+
+  const passed = checks.sequence && checks.proofs && checks.liquidity;
+  const reasons: string[] = [];
+  for (const [k, ok] of Object.entries(checks)) {
+    if (!ok) reasons.push(details[k]);
+  }
+
+  return {
+    passed,
+    reason: reasons.length ? `Guard Tripped: ${reasons.join("; ")}` : "All invariants verified",
+    checks,
+    details,
+  };
+}
+
 // ─── Stats / snapshot ────────────────────────────────────────────────
 
 export interface PayoutStats {

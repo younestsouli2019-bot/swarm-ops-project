@@ -64,21 +64,21 @@ async function getAccessToken(): Promise<string> {
     throw new Error("PAYONEER_USER_ID and PAYONEER_API_SECRET required");
   }
 
-  // Payoneer API v4 — OAuth2 with username/password
+  // Payoneer API v4 — OAuth2 client credentials grant
   const credentials = Buffer.from(
     `${PAYONEER_USER_ID}:${PAYONEER_CLIENT_SECRET}`
   ).toString("base64");
 
-  const res = await fetch(`${PAYONEER_BASE}/v4/authentication/token`, {
+  const res = await fetch(`${PAYONEER_BASE}/mps-api/v4/authentication/token`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "Authorization": `Basic ${credentials}`,
     },
     body: JSON.stringify({
-      grant_type: "password",
-      username: PAYONEER_USER_ID,
-      password: PAYONEER_CLIENT_SECRET,
+      grant_type: "client_credentials",
+      client_id: PAYONEER_USER_ID,
+      client_secret: PAYONEER_CLIENT_SECRET,
     }),
   });
 
@@ -174,6 +174,37 @@ export function generatePayoneerInstructions(
 }
 
 // ─── Transfer Execution ─────────────────────────────────────────────
+
+export async function getPayoneerBalance(): Promise<{
+  balance?: string;
+  currency?: string;
+  account_id?: string;
+  error?: string;
+}> {
+  if (!PAYONEER_USER_ID || !PAYONEER_CLIENT_SECRET) {
+    return { error: "PAYONEER_USER_ID / PAYONEER_API_SECRET not configured" };
+  }
+  if (!PAYONEER_ACCOUNT_ID) {
+    return { error: "PAYONEER_ACCOUNT_ID not configured" };
+  }
+  try {
+    const token = await getAccessToken();
+    const res = await fetch(`${PAYONEER_BASE}/v4/accounts/${PAYONEER_ACCOUNT_ID}/balance`, {
+      headers: { "Authorization": `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      return { error: `HTTP ${res.status}: ${await res.text()}` };
+    }
+    const data = await res.json();
+    return {
+      balance: data.available_balance ?? data.balance ?? "0",
+      currency: data.currency ?? "USD",
+      account_id: PAYONEER_ACCOUNT_ID,
+    };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
 
 export async function executePayoneerTransfer(
   req: PayoneerTransferRequest
