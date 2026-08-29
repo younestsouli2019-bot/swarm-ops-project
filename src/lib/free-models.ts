@@ -19,7 +19,18 @@ export type ModelProvider =
   | "qwen"
   | "ollama"
   | "zai"
-  | "nvidia";
+  | "nvidia"
+  | "glm_local";
+
+// ─── GLM-5.3 PHASE-4 LOCAL DEPLOY OPTION ─────────────────────────────────
+// When the swarm graduates to self-hosted (Phase-4):
+//   ENGINE:   vLLM >=0.6.0 / SGLang >=0.4.0 / OpenClaw (OpenAI-compat /v1)
+//   MODEL:    THUDM/glm-5.3-flash (GGUF / AWQ / FP8, 70B/128B variants)
+//   ENDPOINT: http://localhost:8000/v1/chat/completions   (Ollama/OpenAI compat)
+//   Set in .env:
+//       GLM_LOCAL_BASE_URL=http://localhost:8000/v1    +    GLM_LOCAL_API_KEY=xxx
+//   Advantages: zero token cost, no rate limits, private data never leaves
+//   the swarm's runtime.  The provider key "glm_local" activates this path.
 
 export interface FreeModelConfig {
   id: string;
@@ -129,6 +140,58 @@ export const FREE_MODELS: FreeModelConfig[] = [
     capabilities: ["chat", "code", "reasoning", "json_mode", "tools"],
     api_key_env: "ZAI_API_KEY",
     free_tier_limit: "Per Z.ai plan",
+    docs_url: "https://docs.z.ai/",
+  },
+  // ─── GLM-5.3 / ZCode (current) — deployed apps call these ────────────────
+  //   - Reasoning is enabled natively via { thinking: "enabled", reasoning_effort: "low" }.
+  //   - Supported across Z.ai PaaS, OpenRouter, and the Phase-4 self-hosted path.
+  {
+    id: "zai-glm-5.3",
+    display_name: "GLM-5.3 (Z.ai, reasoning enabled)",
+    provider: "zai",
+    endpoint: "https://api.z.ai/api/paas/v4/chat/completions",
+    model_id: "glm-5.3",
+    context_window: 1_048_576,
+    capabilities: ["chat", "code", "reasoning", "json_mode", "tools", "long_context"],
+    api_key_env: "ZAI_API_KEY",
+    free_tier_limit: "Per Z.ai plan — reasoning billed as thinking tokens",
+    docs_url: "https://docs.z.ai/",
+  },
+  {
+    id: "openrouter-glm-5.3",
+    display_name: "GLM-5.3 (OpenRouter, reasoning enabled)",
+    provider: "openrouter",
+    endpoint: "https://openrouter.ai/api/v1/chat/completions",
+    model_id: "zhipuai/glm-5.3",
+    context_window: 262_144,
+    capabilities: ["chat", "code", "reasoning", "json_mode", "tools"],
+    api_key_env: "OPENROUTER_API_KEY",
+    free_tier_limit: "Paid tier via OpenRouter; thinking billed separately",
+    docs_url: "https://openrouter.ai/zhipuai/glm-5.3",
+  },
+  {
+    id: "local-glm-5.3-flash",
+    display_name: "GLM-5.3-Flash (Phase-4 self-hosted · vLLM/SGLang/OpenClaw)",
+    provider: "glm_local",
+    endpoint: "http://localhost:8000/v1/chat/completions",
+    model_id: "glm-5.3-flash",
+    context_window: 131_072,
+    capabilities: ["chat", "code", "reasoning", "json_mode", "local_private"],
+    api_key_env: "GLM_LOCAL_API_KEY",
+    free_tier_limit: "Self-hosted: unlimited — GPU cost only",
+    docs_url: "https://github.com/THUDM/GLM-5",
+  },
+  // ─── ZCode (code-specific GLM) ─────────────────────────────────────────
+  {
+    id: "zai-zcode",
+    display_name: "ZCode (Z.ai · code-native GLM)",
+    provider: "zai",
+    endpoint: "https://api.z.ai/api/paas/v4/chat/completions",
+    model_id: "zcode",
+    context_window: 262_144,
+    capabilities: ["code", "reasoning", "chat", "tools"],
+    api_key_env: "ZAI_API_KEY",
+    free_tier_limit: "Per Z.ai plan — reasoning billed as thinking tokens",
     docs_url: "https://docs.z.ai/",
   },
   // ─── OpenRouter Free Models (expanded) ───────────────────────────────
@@ -340,6 +403,52 @@ export const FREE_MODELS: FreeModelConfig[] = [
 ];
 
 /**
+ * Build a /chat/completions request body, injecting provider-specific
+ * extra params.  For GLM-5.3 and ZCode we always write:
+ *   { model: "glm-5.3", thinking: "enabled", reasoning_effort: "low" }
+ * — per the deployed-app GLM directive.  All other models pass through
+ * the standard OpenAI-compatible fields.  The caller owns auth headers
+ * and the actual fetch.
+ */
+export function buildChatCompletionBody(opts: {
+  model: string;
+  messages: Array<{ role: string; content: unknown }>;
+  max_tokens?: number;
+  temperature?: number;
+  stream?: boolean;
+  response_format?: { type: string };
+  tools?: unknown[];
+  extra?: Record<string, unknown>;
+}): Record<string, unknown> {
+  const m = (opts.model || "").toLowerCase();
+  const isGlm5 =
+    m.includes("glm-5.3") ||
+    m.includes("glm5.3") ||
+    m.includes("glm_5.3") ||
+    m.includes("glm-5-3") ||
+    m === "glm-5.3" ||
+    m === "zcode";
+
+  const base: Record<string, unknown> = {
+    model: opts.model,
+    messages: opts.messages,
+  };
+  if (typeof opts.max_tokens === "number") base.max_tokens = opts.max_tokens;
+  if (typeof opts.temperature === "number") base.temperature = opts.temperature;
+  if (typeof opts.stream === "boolean") base.stream = opts.stream;
+  if (opts.response_format) base.response_format = opts.response_format;
+  if (opts.tools && Array.isArray(opts.tools)) base.tools = opts.tools;
+
+  if (isGlm5) {
+    base.thinking = "enabled";
+    base.reasoning_effort = "low";
+  }
+
+  if (opts.extra) Object.assign(base, opts.extra);
+  return base;
+}
+
+/**
  * Returns the list of models that are actually available given the current
  * environment (i.e., the required API key env var is set).
  */
@@ -349,17 +458,27 @@ export function getAvailableModels(): FreeModelConfig[] {
       // Ollama is "available" if the host is reachable OR OLLAMA_HOST is set
       return !!process.env.OLLAMA_HOST || process.env.NODE_ENV !== "production";
     }
+    if (m.provider === "glm_local") {
+      return !!process.env.GLM_LOCAL_API_KEY || !!process.env.GLM_LOCAL_BASE_URL;
+    }
     return !!process.env[m.api_key_env];
   });
 }
 
 /**
  * Returns the default model — the first available free model, falling back to
- * ZAI (which is always available in this sandbox).
+ * ZAI (which is always available in this sandbox).  GLM-5.3 is preferred when
+ * available because of the native reasoning_effort=low low-cost thinking.
  */
 export function getDefaultModel(): FreeModelConfig {
   const available = getAvailableModels();
-  // Prefer Z.ai first (always available in sandbox), then free tiers.
+  // Prefer GLM-5.3 Z.ai → GLM-5.3 OpenRouter → any Z.ai → rest.
+  const glm5 = available.find((m) => m.id === "zai-glm-5.3");
+  if (glm5) return glm5;
+  const glm5or = available.find((m) => m.id === "openrouter-glm-5.3");
+  if (glm5or) return glm5or;
+  const zcode = available.find((m) => m.id === "zai-zcode");
+  if (zcode) return zcode;
   const zai = available.find((m) => m.provider === "zai");
   return zai ?? available[0] ?? FREE_MODELS[0];
 }
