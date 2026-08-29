@@ -13,8 +13,9 @@
  * Sequence:
  *   1. Reconcile Loop   — assess global state vs desired state
  *   2. Payout Guard     — verify real-proof invariants
- *   3. Deploy Loop      — (only if guard passes) autonomous redeploy
- *   4. Delivery Loop    — (only if guard passes) mission/payout delivery
+ *   3. Fusion Engine    — L0-4 fusion/correlation/strategy assessment (read-only)
+ *   4. Deploy Loop      — (only if guard passes) autonomous redeploy
+ *   5. Delivery Loop    — (only if guard passes) mission/payout delivery
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -23,6 +24,8 @@ import { deployLoop } from "@/lib/loops/deploy-loop";
 import { runDeliveryLoop } from "@/lib/loops/delivery-loop";
 import { verifyPayoutGuard } from "@/lib/payout-state-machine";
 import { verifyDaemonToken } from "@/lib/kms-auth";
+import { runFusionEngine } from "@/lib/fusion/engine";
+import type { IngestEvent } from "@/lib/fusion/ingestion";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -74,11 +77,33 @@ export async function POST(req: NextRequest) {
     results.guard = guard;
     (results.logs as string[]).push(`Payout guard: ${guard.passed ? "PASSED" : "TRIPPED"}`);
 
+    // 3. Fusion Engine — L0-4 fusion/correlation/strategy assessment.
+    // Read-only: produces signals, correlations, and strategy intent only.
+    // Actionable candidates require real external proof + guard passing
+    // (enforced downstream by the delivery/execution loops).
+    const reconcile = results.reconcile as
+      | { anomalies?: Array<{ severity: string; kind: string; batch_id?: string; detail: string }> }
+      | undefined;
+    const events: IngestEvent[] = (reconcile?.anomalies ?? []).slice(0, 25).map((a) => ({
+      source: "telemetry",
+      ref: String(a.batch_id || a.kind || "anomaly"),
+      attrs: { severity: a.severity, detail: a.detail },
+      strength: a.severity === "critical" ? -0.8 : a.severity === "warning" ? -0.4 : 0,
+      kind: a.kind,
+    }));
+    const fusion = await runFusionEngine({ events, forceDryRun: dryRun });
+    results.fusion = fusion;
+    (results.logs as string[]).push(
+      `Fusion: ingested=${fusion.signals_ingested} entities=${fusion.entities.length}` +
+        ` edges=${fusion.graph_edges.length} risk=${fusion.risk_level}` +
+        ` breakers=${fusion.tripped_breakers.length} actionable=${fusion.strategy_candidates.filter((c) => c.actionable).length}`
+    );
+
     if (guard.passed) {
-      // 3. Deploy loop — autonomous redeploy if needed
+      // 4. Deploy loop — autonomous redeploy if needed
       results.deploy = await deployLoop();
 
-      // 4. Delivery loop — process successful missions/payouts
+      // 5. Delivery loop — process successful missions/payouts
       results.delivery = await runDeliveryLoop();
     } else {
       results.deploy = null;

@@ -54,3 +54,6 @@ server.log
 /skills/
 .vercel
 .env*
+
+# fusion engine runtime state (circuit breakers persisted on disk)
+/data/fusion/**
