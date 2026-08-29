@@ -26,6 +26,7 @@ import { verifyPayoutGuard } from "@/lib/payout-state-machine";
 import { verifyDaemonToken } from "@/lib/kms-auth";
 import { runFusionEngine } from "@/lib/fusion/engine";
 import type { IngestEvent } from "@/lib/fusion/ingestion";
+import { journalAppend, openJournal } from "@/lib/journal/append-only";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -68,6 +69,23 @@ export async function POST(req: NextRequest) {
     logs: [] as string[],
   };
 
+  // EXECUTION ISOLATION GUARDRAIL (Z.ai/Base44 plan-transition remediation):
+  // when PLAN_TRANSITION_MODE=1 the daemon runs assessment-only (reconcile +
+  // guard + fusion). Deploy/delivery mutations are refused so a recycled or
+  // transitioning workspace can never write into the base environment.
+  const planTransition = process.env.PLAN_TRANSITION_MODE === "1";
+  if (planTransition) {
+    (results.logs as string[]).push(
+      "EXECUTION ISOLATION: PLAN_TRANSITION_MODE=1 — running read-only, deploy/delivery refused"
+    );
+  }
+
+  // Append-only tick journal: durable external visibility before we start.
+  // First journal write happens here so even a mid-task disconnect leaves a
+  // recoverable trace (see src/lib/journal/append-only.ts).
+  openJournal();
+  const j0 = journalAppend({ tick: "start", dryRun, planTransition });
+
   try {
     // 1. Reconcile loop — assess state, build anomaly report
     results.reconcile = await runReconcileLoop();
@@ -99,28 +117,52 @@ export async function POST(req: NextRequest) {
         ` breakers=${fusion.tripped_breakers.length} actionable=${fusion.strategy_candidates.filter((c) => c.actionable).length}`
     );
 
-    if (guard.passed) {
+    if (guard.passed && !planTransition) {
       // 4. Deploy loop — autonomous redeploy if needed
       results.deploy = await deployLoop();
 
       // 5. Delivery loop — process successful missions/payouts
       results.delivery = await runDeliveryLoop();
+    } else if (planTransition) {
+      results.deploy = null;
+      results.delivery = null;
+      (results.logs as string[]).push(
+        "Sub-loops halted: PLAN_TRANSITION_MODE=1 (execution isolation active — no writes to base env)"
+      );
     } else {
       results.deploy = null;
       results.delivery = null;
       (results.logs as string[]).push(`Sub-loops halted: ${guard.reason}`);
     }
 
+    journalAppend({
+      tick: "completed",
+      seq0: j0.seq,
+      guardPassed: guard.passed,
+      planTransition,
+      reconcile: results.reconcile ? { ok: true } : { ok: false },
+      fusionRisk: results.fusion ? (results.fusion as { risk_level?: string }).risk_level : null,
+      deploy: results.deploy ? { ok: true } : null,
+      delivery: results.delivery ? { ok: true } : null,
+    });
+
     return NextResponse.json({
       ok: true,
       ...results,
+      journal: { startSeq: j0.seq, lastEntryHash: j0.entryHash, path: j0.path },
       source: "api:/api/swarm/daemon",
     });
   } catch (err) {
+    journalAppend({
+      tick: "failed",
+      seq0: j0.seq,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return NextResponse.json(
       {
         ok: false,
         error: err instanceof Error ? err.message : String(err),
+        journal: { startSeq: j0.seq, lastEntryHash: j0.entryHash, path: j0.path },
         ...results,
       },
       { status: 500 }
