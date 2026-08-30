@@ -34,3 +34,28 @@ jobs:
           elapsed=$(echo "$body" | jq -r '.elapsed_ms // 0')
           
           echo "Ingested: $ingested | Completed: $completed | Revenue: \$$(echo "scale=2; $revenue/100" | bc) | Elapsed: ${elapsed}ms"
+
+      # Fire the swarm daemon loops too. The daemon's Vercel cron is limited
+      # to once daily on the Hobby plan; if CRON_SECRET is configured as a
+      # GitHub repo secret, this workflow (every 2 min) takes over the
+      # high-frequency daemon cadence. Without the secret it degrades to the
+      # daily Vercel cron.
+      - name: Run swarm daemon
+        run: |
+          if [ -n "${{ secrets.CRON_SECRET }}" ]; then
+            response=$(curl -s -w "\n%{http_code}" \
+              -X POST \
+              -H "Accept: application/json" \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              https://swarm-ops-project.vercel.app/api/swarm/daemon)
+            http_code=$(echo "$response" | tail -n1)
+            body=$(echo "$response" | sed '$d')
+            echo "Daemon HTTP Status: $http_code"
+            echo "Daemon Response: $body" | head -c 2000
+            if [ "$http_code" != "200" ]; then
+              echo "Daemon failed with status $http_code"
+              exit 1
+            fi
+          else
+            echo "CRON_SECRET not configured as a GitHub repo secret — daemon runs on its daily Vercel cron."
+          fi

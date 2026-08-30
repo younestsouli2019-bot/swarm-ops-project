@@ -7,7 +7,7 @@
     },
     {
       "path": "/api/swarm/daemon",
-      "schedule": "*/5 * * * *"
+      "schedule": "0 6 * * *"
     }
   ]
 }
