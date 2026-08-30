@@ -117,6 +117,7 @@ import {
   createPayout as createPayoutStateMachine,
   validatePayout,
 } from "./payout-state-machine";
+import type { RepoMonitorTickResult } from "./repo-monitor";
 
 const USD = "USD" as const;
 
@@ -506,6 +507,22 @@ export interface TickReport {
    * providers on failure.
    */
   model_activation?: ModelActivationTickResult;
+  /**
+   * Repo Monitoring + Drift Repair (Adaptation Engine) tick result.
+   *
+   * Operator directive:
+   *   "Repo Monitoring (2 repos, every 2 min): scanRepo() — checks git
+   *    status, uncommitted files, unpushed commits, upstream ahead/behind,
+   *    last commit age. Monitors: /home/z/my-project (Nouveau-dossier-3-).
+   *    fixRepoDrift() — auto-pushes unpushed commits if GITHUB_PAT is
+   *    configured, logs warnings for dirty trees + stale branches."
+   *
+   * Runs every `REPO_MONITOR_INTERVAL_TICKS` ticks (~2 min at the 12s
+   * autopilot cadence). Non-throwing — every phase is wrapped in
+   * try/catch (7 independent failure domains); a dead git or missing
+   * .git cannot break the swarm tick.
+   */
+  repo_monitor?: RepoMonitorTickResult;
 }
 
 /**
@@ -1891,6 +1908,10 @@ function runProcurementTick(): {
   return { created, advanced, received };
 }
 
+/** Repo Monitoring runs every 10 ticks — ~2 min at the 12s autopilot cadence. */
+const REPO_MONITOR_INTERVAL_TICKS = 10;
+let repoMonitorTickCounter = 0;
+
 /**
  * One full orchestration cycle.
  *
@@ -2044,6 +2065,35 @@ export async function tick(): Promise<TickReport> {
     // Autopilot failure is non-fatal — the in-memory tick still ran.
   }
 
+  // ─────────────────────────────────────────────────────────────────────
+  // REPO MONITORING + DRIFT REPAIR (Adaptation Engine)
+  // ─────────────────────────────────────────────────────────────────────
+  //
+  // Operator directive:
+  //   "Repo Monitoring (2 repos, every 2 min): scanRepo() ... fixRepoDrift()
+  //    ... Runs every 10 ticks (~2 min at 12s cadence). Non-throwing —
+  //    every phase wrapped in try/catch (7 independent failure domains)."
+  //
+  // Dynamically imported so `node:child_process` never enters a client
+  // bundle. Failure of the whole pass (dead git, missing .git, network
+  // error) is recorded on the report, never thrown — it cannot break
+  // the swarm tick.
+  let repoMonitorResult: RepoMonitorTickResult = {
+    scanned_at: new Date().toISOString(),
+    repos: [],
+    drift_fixed: 0,
+    warnings: [],
+  };
+  try {
+    repoMonitorTickCounter += 1;
+    if (repoMonitorTickCounter % REPO_MONITOR_INTERVAL_TICKS === 0) {
+      const { runRepoAdaptation } = await import("./repo-monitor");
+      repoMonitorResult = await runRepoAdaptation();
+    }
+  } catch {
+    // Non-throwing: a broken repo monitor must never halt the swarm tick.
+  }
+
   // Read settlement counters stashed on the last batch (if any).
   const settlementStats = getSettlementStats();
   const settlement_prepared =
@@ -2081,6 +2131,7 @@ export async function tick(): Promise<TickReport> {
     autopilot_scanned: autopilotResult.scanned,
     autopilot_advanced: autopilotResult.advanced,
     autopilot_settled: autopilotResult.settled,
+    repo_monitor: repoMonitorResult,
   };
 
   // Layer 1 post: SIG signal update + breach evaluation.
