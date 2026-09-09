@@ -11,7 +11,7 @@
  *   CUSTOMER → Payoneer → SWIFT → Attijariwafa
  */
 
-import { CMIClient } from "./cmi";
+import { CMIClient, createCMIClient } from "./cmi";
 
 // ─── PSP Types ──────────────────────────────────────────────────────
 
@@ -97,6 +97,7 @@ export interface PaymentResult {
   payment_id?: string;
   status: "pending" | "processing" | "completed" | "failed";
   redirect_url?: string;
+  form_fields?: Record<string, string>;
   error?: string;
 }
 
@@ -220,6 +221,7 @@ export class MoroccanPSP {
         payment_id: intent.order_id,
         status: "pending",
         redirect_url: response.gateway_url,
+        form_fields: response.payload,
       };
     } catch (err) {
       return {
