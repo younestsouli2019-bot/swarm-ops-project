@@ -472,6 +472,10 @@ export function getAvailableModels(): FreeModelConfig[] {
  */
 export function getDefaultModel(): FreeModelConfig {
   const available = getAvailableModels();
+  // Phase-4: prefer the zero-cost self-hosted engine first, same as
+  // dynamic-router.ts in the main project — local beats any cloud model.
+  const local = available.find((m) => m.id === "local-glm-5.3-flash");
+  if (local) return local;
   // Prefer GLM-5.3 Z.ai → GLM-5.3 OpenRouter → any Z.ai → rest.
   const glm5 = available.find((m) => m.id === "zai-glm-5.3");
   if (glm5) return glm5;
