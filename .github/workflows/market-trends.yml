@@ -1,0 +1,58 @@
+name: Market Trends Update
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Generate trends report
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p docs
+          {
+            echo "# Market & Technology Trends"
+            echo
+            echo "_Auto-generated $(date -u +%F) from public data. Review before acting; this report never changes payout or financial logic._"
+            echo
+            for topic in ai-agents multi-agent llm-agents agent-orchestration; do
+              echo "## Trending GitHub topic: $topic"
+              gh api -X GET search/repositories -f q="topic:$topic pushed:>$(date -u -d '30 days ago' +%F)" \
+                -f sort=stars -f order=desc -f per_page=8 \
+                --jq '.items[] | "- [\(.full_name)](\(.html_url)) ★\(.stargazers_count) — \(.description // "")"'
+              echo
+            done
+            echo "## Outdated npm dependencies"
+            echo '```'
+            npm outdated --long 2>/dev/null | head -50 || true
+            echo '```'
+          } > docs/market-trends.md
+      - name: Open PR if changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- docs/market-trends.md && [ -z "$(git ls-files --others --exclude-standard docs)" ]; then
+            echo "No changes"; exit 0
+          fi
+          branch="auto/market-trends-$(date -u +%F)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git add docs/market-trends.md
+          git commit -m "docs: update market trends report"
+          git push -f origin "$branch"
+          gh pr create --title "Market trends update $(date -u +%F)" \
+            --body "Automated weekly trends report. Review and merge." \
+            --base main --head "$branch" || echo "PR already exists"
