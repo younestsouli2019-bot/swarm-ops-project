@@ -10,10 +10,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Run swarm tick
+        env:
+          VERCEL_BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         run: |
+          if [ -z "$VERCEL_BYPASS" ]; then
+            echo "::error::VERCEL_AUTOMATION_BYPASS_SECRET is not set; Vercel Deployment Protection will return 401."
+            exit 1
+          fi
           response=$(curl -s -w "\n%{http_code}" \
             -X POST \
             -H "Accept: application/json" \
+            -H "x-vercel-protection-bypass: $VERCEL_BYPASS" \
             https://swarm-ops-project.vercel.app/api/orchestrator/tick)
           
           http_code=$(echo "$response" | tail -n1)
@@ -41,11 +48,14 @@ jobs:
       # high-frequency daemon cadence. Without the secret it degrades to the
       # daily Vercel cron.
       - name: Run swarm daemon
+        env:
+          VERCEL_BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         run: |
           if [ -n "${{ secrets.CRON_SECRET }}" ]; then
             response=$(curl -s -w "\n%{http_code}" \
               -X POST \
               -H "Accept: application/json" \
+              -H "x-vercel-protection-bypass: $VERCEL_BYPASS" \
               -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
               https://swarm-ops-project.vercel.app/api/swarm/daemon)
             http_code=$(echo "$response" | tail -n1)
